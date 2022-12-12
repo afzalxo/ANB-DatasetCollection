@@ -102,7 +102,8 @@ class MBConv(nn.Module):
         norm_layer: Callable[..., nn.Module],
         activation_layer: Callable[..., nn.Module],
         se_layer: Callable[..., nn.Module] = SqueezeExcitation,
-        mode: str = "train",
+        platform: str = 'gpu',
+        mode: str = 'train',
     ) -> None:
         super().__init__()
         self.mode = mode
@@ -142,9 +143,10 @@ class MBConv(nn.Module):
         )
 
         # squeeze and excitation (only if to be deployed on GPU)
-        # if activation_layer == nn.SiLU:
-        #    squeeze_channels = max(1, cnf.input_channels // 4)
-        #    layers.append(se_layer(expanded_channels, squeeze_channels, activation=partial(nn.SiLU, inplace=True)))
+        if platform == 'gpu':
+            #if activation_layer == nn.SiLU:
+            squeeze_channels = max(1, cnf.input_channels // 4)
+            layers.append(se_layer(expanded_channels, squeeze_channels, activation=partial(nn.SiLU, inplace=True)))
 
         # project
         layers.append(
@@ -180,7 +182,8 @@ class FusedMBConv(nn.Module):
         stochastic_depth_prob: float,
         norm_layer: Callable[..., nn.Module],
         activation_layer: Callable[..., nn.Module],
-        mode: str = "train",
+        platform: str = 'gpu',
+        mode: str = 'train',
     ) -> None:
         super().__init__()
         self.mode = mode
@@ -271,6 +274,7 @@ class EfficientNet(nn.Module):
         """
         super().__init__()
         self.mode = mode
+        self.platform = platform
         if not inverted_residual_setting:
             raise ValueError("The inverted_residual_setting should not be empty")
         elif not (
@@ -294,9 +298,9 @@ class EfficientNet(nn.Module):
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
 
-        if platform == "gpu":
+        if self.platform == "gpu":
             activation_layer = nn.SiLU
-        elif platform == "fpga":
+        elif self.platform == "fpga":
             activation_layer = nn.ReLU
         else:
             raise ValueError(f"Platform {platform} not supported...")
@@ -337,7 +341,7 @@ class EfficientNet(nn.Module):
 
                 stage.append(
                     block_cnf.block(
-                        block_cnf, sd_prob, norm_layer, activation_layer, mode=self.mode
+                        block_cnf, sd_prob, norm_layer, activation_layer, platform=self.platform, mode=self.mode
                     )
                 )
                 stage_block_id += 1
@@ -365,7 +369,6 @@ class EfficientNet(nn.Module):
             nn.Dropout(p=dropout, inplace=True),
             nn.Linear(lastconv_output_channels, num_classes),
         )
-        """
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out")
@@ -378,7 +381,6 @@ class EfficientNet(nn.Module):
                 init_range = 1.0 / math.sqrt(m.out_features)
                 nn.init.uniform_(m.weight, -init_range, init_range)
                 nn.init.zeros_(m.bias)
-        """
 
     def _forward_impl(self, x: Tensor) -> Tensor:
         x = self.features(x)

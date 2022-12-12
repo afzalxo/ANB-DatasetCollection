@@ -4,9 +4,10 @@ from typing import Callable, List, Optional, Sequence, Tuple, Union
 import torch
 from torch import Tensor
 
-from models.utils import _make_ntuple
+from auxiliary.utils import _make_ntuple
 
 interpolate = torch.nn.functional.interpolate
+
 
 class FrozenBatchNorm2d(torch.nn.Module):
     """
