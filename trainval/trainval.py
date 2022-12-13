@@ -157,7 +157,7 @@ def infer(
         del loss_list
     else:
         avg_loss = loss_rank
-    del loss_rank, loss_list, acc_tensor_list
+    del loss_rank
     return avg_top1_val, avg_top5_val, avg_loss
 
 

@@ -1,10 +1,10 @@
 import os
 import torch
+import numpy as np
 from torchvision import datasets, transforms
 
 
-def build_torchvision_loader(args):
-    is_train = False
+def build_torchvision_loader(args, is_train=False):
     t = []
     input_size = 224
     crop_pct = 224 / 256
@@ -20,13 +20,18 @@ def build_torchvision_loader(args):
     tforms = transforms.Compose(t)
     root = os.path.join(args.data_path, "train" if is_train else "val")
     dataset = datasets.ImageFolder(root, transform=tforms)
-    # sampler_val = torch.utils.data.DistributedSampler(dataset,
-    #                num_replicas=args.world_size, rank=args.global_rank,
-    #                shuffle=False)
+    sampler = None
+    if hasattr(args, 'subset_len'):
+        if args.subset_len is not None:
+            total_images = len(dataset)
+            image_indices = list(range(total_images))
+            np.random.shuffle(image_indices)
+            sampler = torch.utils.data.SubsetRandomSampler(image_indices[:args.subset_len])
     valid_queue = torch.utils.data.DataLoader(
         dataset,
         batch_size=int(args.val_batch_size),
         num_workers=args.num_workers,
+        sampler=sampler,
         pin_memory=False,
         drop_last=False,
     )

@@ -364,7 +364,13 @@ def create_exp_dir(path, scripts_to_save=None):
     if scripts_to_save is not None:
         os.mkdir(os.path.join(path, "scripts"))
         for script in scripts_to_save:
-            dst_file = os.path.join(path, "scripts", os.path.basename(script))
+            if os.path.dirname(script) == '':
+                dst_file = os.path.join(path, "scripts", os.path.basename(script))
+            else:
+                pth = os.path.join(path, 'scripts', os.path.dirname(script))
+                if not os.path.exists(pth):
+                    os.makedirs(pth)
+                dst_file = os.path.join(path, 'scripts', script)
             shutil.copyfile(script, dst_file)
 
 
