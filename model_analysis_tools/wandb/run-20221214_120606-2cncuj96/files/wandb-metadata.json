@@ -1,0 +1,24 @@
+{
+    "os": "Linux-5.4.0-126-generic-x86_64-with-glibc2.31",
+    "python": "3.9.13",
+    "heartbeatAt": "2022-12-14T04:06:08.047660",
+    "startedAt": "2022-12-14T04:06:06.611167",
+    "docker": null,
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "gpu_count": 4,
+    "cpu_count": 48,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "/home/aahmadaa/NASBenchFPGA/imagenet/model_analysis_tools/obtain_artifact_metadata.py",
+    "codePath": "model_analysis_tools/obtain_artifact_metadata.py",
+    "git": {
+        "remote": "git@github.com:afzalxo/NASBenchAccel.git",
+        "commit": "870aab79e31c34634fab223d84f25775dae86564"
+    },
+    "email": "afzalahmad0203@gmail.com",
+    "root": "/home/aahmadaa/NASBenchFPGA/imagenet",
+    "host": "eez194",
+    "username": "aahmadaa",
+    "executable": "/home/aahmadaa/anaconda3/envs/ffcv-randaug/bin/python3"
+}

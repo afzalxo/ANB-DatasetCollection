@@ -134,7 +134,7 @@ def main():
         local_rank = int(os.environ["SLURM_LOCALID"])
         world_size = int(os.environ["SLURM_NTASKS"])
         iplist = os.environ["SLURM_JOB_NODELIST"]
-        job_id = os.environ['SLURM_JOB_ID']
+        job_id = int(os.environ['SLURM_JOB_ID'])
         ip = subprocess.getoutput(f"scontrol show hostname {iplist} | head -n1")
         setup_for_distributed(global_rank == 0)
     elif args.distributed and args.cluster == "local":
@@ -159,15 +159,15 @@ def main():
 
     USE_WANDB = args.use_wandb if global_rank == 0 else False
 
-    args.save = "{}exp-{}-{}".format(
-        args.save, args.note, time.strftime("%Y%m%d-%H%M%S")
+    args.save = "{}exp-{}-{}-{}".format(
+        args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M%S")
     )
     print(
         f"Global Rank {global_rank}, Local Rank {local_rank},\
         World Size {world_size}, Job ID {args.job_id}"
     )
     if global_rank == 0:
-        utils.create_exp_dir(args.save, scripts_to_save=glob.glob("**/*.py"))
+        utils.create_exp_dir(args.save, scripts_to_save=glob.glob("**/*.py", recursive=True))
     wandb_con = None
     wandb_art = None
     wandb_metadata_dir = None
@@ -181,12 +181,12 @@ def main():
         wandb_con = wandb.init(
             project="NASBenchFPGA",
             entity="europa1610",
-            name=args.note,
+            name=args.note+f'_{args.job_id}',
             settings=wandb.Settings(code_dir="."),
             dir=wandb_metadata_dir,
         )
-        wandb_art = wandb.Artifact(name=f'train-code-nasfpga-jobid{job_id}', type='code')
-        wandb_art.add_dir('./')
+        wandb_art = wandb.Artifact(name=f'train-code-jobid{job_id}', type='code')
+        wandb_art.add_dir(os.path.join(args.save, 'scripts'))
         wandb_con.log_artifact(wandb_art)
     else:
         wandb_con = None
@@ -236,11 +236,11 @@ def main():
     criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
         f"cuda:{local_rank}"
     )
-    for m in range(10):
+    for m in range(1000):
         args.model_num = m
         dist.barrier()
         args.design = searchables.RandomSearchable()#EfficientNetB0Conf(d=1)#.RandomSearchable()
-        logging.info('Design = \n%s', str(np.array(args.design)))
+        logging.info('Job ID: %d, Model Number: %d, Design = \n%s', args.job_id, args.model_num, str(np.array(args.design)))
         platform, mode = 'fpga', 'train'
         model = Network(design=args.design, platform=platform, mode=mode)
         args.macs, args.params = profile_model((1, 3, 224, 224),
@@ -249,6 +249,7 @@ def main():
                                                mode=mode)
         model = model.to(memory_format=torch.channels_last)
         model = model.to(f"cuda:{local_rank}")
+        dist.barrier()
 
         if args.distributed:
             model = torch.nn.parallel.DistributedDataParallel(model)
@@ -269,7 +270,7 @@ def main():
             wandb_con,
             args,
         )
-        logging.info("Model Acc: %f", valid_t1)
+        logging.info("Job ID: %d, Model Number: %d, Model Acc: %f", args.job_id, args.model_num, valid_t1)
 
 
 def create_optimizer(model, lr, weight_decay, args):

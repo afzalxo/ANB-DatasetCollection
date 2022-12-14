@@ -296,7 +296,7 @@ def train_x_epochs(
             import wandb
 
             wandb_art = wandb.Artifact(
-                name=f"models-nasfpga-try1-random-all-jobid{args.job_id}",
+                name=f"models-random-jobid{args.job_id}-model{args.model_num}",
                 type="model",
                 metadata={
                     "training_config": training_config_dict,

@@ -41,7 +41,7 @@ def RandomSearchable():
     ich = [32, 16, 24, 40, 80, 112, 192]
     och = [16, 24, 40, 80, 112, 192, 320]
     blocktypes = ["MB", "FMB"]
-    kernel_sizes = [3]
+    kernel_sizes = [3, 5]
     exp = [1, 4, 6]
     layers = [1, 2, 3]
     layer_confs = []

@@ -237,22 +237,18 @@ def main():
     criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
         f"cuda:{local_rank}"
     )
-    import wandb
-    os.environ["WANDB_API_KEY"] =\
-        "166a45fa2ad2b2db9ec555119b273a3a9bdacc41"
-    os.environ["WANDB_ENTITY"] = "europa1610"
-    os.environ["WANDB_PROJECT"] = "NASBenchFPGA"
-    artif_con = wandb.init()
-    for m in range(1, 10):
+    for m in range(2, 9):
         args.model_num = m
         dist.barrier()
         ### Loading design from artifact here. Sometimes not downloaded properly, hence try except
         not_loaded = True
         while not_loaded:
             try:
-                artifact = artif_con.use_artifact(f'europa1610/NASBenchFPGA/models-nasfpga-try1-random-all-jobid10206:v{m}', type='model')
-                model_dir = artifact.download()
-                sd = torch.load(os.path.join(model_dir, "f_model.pth"), map_location="cpu")
+                if local_rank == 0:
+                    artifact = wandb_con.use_artifact(f'europa1610/NASBenchFPGA/models-nasfpga-try1-random-all-jobid10204:v{m}', type='model')
+                    artifact.download(args.save)
+                dist.barrier()
+                sd = torch.load(os.path.join(args.save, "f_model.pth"), map_location="cpu")
                 not_loaded = False
             except ValueError:
                 not_loaded = True
@@ -274,6 +270,7 @@ def main():
             model = torch.nn.parallel.DistributedDataParallel(model)
         optimizer, scheduler = create_optimizer(model, args.lr,
                                                 args.weight_decay, args)
+        dist.barrier()
         train_acc, train_loss, valid_t1, _, valid_loss = train_x_epochs(
             args.epochs,
             scheduler,
