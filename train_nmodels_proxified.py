@@ -5,6 +5,7 @@ import time
 import glob
 import numpy as np
 import torch
+import gc
 import logging
 import argparse
 import configparser
@@ -271,6 +272,9 @@ def main():
             args,
         )
         logging.info("Job ID: %d, Model Number: %d, Model Acc: %f", args.job_id, args.model_num, valid_t1)
+        del model, optimizer, scheduler
+        torch.cuda.empty_cache()
+        gc.collect()
 
 
 def create_optimizer(model, lr, weight_decay, args):
