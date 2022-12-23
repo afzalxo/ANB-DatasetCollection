@@ -1,3 +1,4 @@
+import gc
 import time
 import torch
 import numpy as np
@@ -7,6 +8,9 @@ import logging
 import torch.distributed as dist
 
 import auxiliary.utils as utils
+
+from models.efficientnet import efficientnet_b0 as Network
+from dataloader.ffcv_dataloader import get_ffcv_loaders
 
 
 def train(
@@ -22,6 +26,7 @@ def train(
     lr_peak_epoch,
     epochs,
     argslr,
+    args
 ):
     from torch.cuda.amp import autocast
 
@@ -36,24 +41,33 @@ def train(
     ), utils.get_cyclic_lr(epoch + 1, argslr, epochs, lr_peak_epoch)
     iters = len(train_queue)
     lrs = np.interp(np.arange(iters), [0, iters], [lr_start, lr_end])
-
+    rank0_finished = torch.zeros(1, dtype=torch.int)
     iterator = train_queue
     for step, (input, target) in enumerate(iterator):
         if fast and step > 10:
-            break
+            # Dry run to ensure trainability
+            return 0, 1, None
         for param_group in optimizer.param_groups:
             param_group["lr"] = lrs[step]
 
         b_start = time.time()
 
         optimizer.zero_grad(set_to_none=True)
-        with autocast():
-            logits = model(input.contiguous(memory_format=torch.channels_last))
-            loss = criterion(logits, target)
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-
+        try:
+            with autocast():
+                logits = model(input.contiguous(memory_format=torch.channels_last))
+                loss = criterion(logits, target)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        except RuntimeError:
+            print("Ran out of GPU memory...")
+            rank0_finished[0] = 1
+            dist.broadcast(rank0_finished, src=args.local_rank)
+            return 0, 0, None
+        if rank0_finished[0] == 1:
+            # This conditional ensures that when one GPU runs out of memory, remaining GPUs abandon training
+            return 0, 0, None
         batch_time.update(time.time() - b_start)
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         n = input.size(0)
@@ -93,23 +107,26 @@ def infer(
     model.eval()
 
     from torch.cuda.amp import autocast
+
     with torch.no_grad():
         with autocast():
             for step, (input, target) in enumerate(valid_queue):
-                if fast and step > 0:
-                    break
-                logits = model(input.contiguous(memory_format=torch.channels_last))
-                # if lr_tta:
-                #    logits += model(torch.flip(input, dims=[3]).contiguous(memory_format=torch.channels_last))
-                loss = criterion(logits, target)
+                try:
+                    logits = model(input.contiguous(memory_format=torch.channels_last))
+                    # if lr_tta:
+                    #    logits += model(torch.flip(input, dims=[3]).contiguous(memory_format=torch.channels_last))
+                    loss = criterion(logits, target)
 
-                prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-                n = input.size(0)
-                objs.update(loss.data.item(), n)
-                top1.update(prec1.data.item(), n)
-                top5.update(prec5.data.item(), n)
+                    prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
+                    n = input.size(0)
+                    objs.update(loss.data.item(), n)
+                    top1.update(prec1.data.item(), n)
+                    top5.update(prec5.data.item(), n)
+                except RuntimeError:
+                    # raise RuntimeError("Ran out of GPU memory...")
+                    print("Ran out of GPU memory...")
+                    return 0, 0, 0
 
-                del logits, loss
                 if step % report_freq == 0:
                     end_time = time.time()
                     if step == 0:
@@ -126,9 +143,11 @@ def infer(
                         top5.avg,
                         duration,
                     )
+                del loss, logits, target
 
     valid_acc_top1 = torch.tensor(top1.avg).to(args.local_rank)
     if args.distributed:
+        dist.barrier()
         acc_tensor_list = [
             torch.zeros_like(valid_acc_top1) for r in range(args.world_size)
         ]
@@ -140,6 +159,7 @@ def infer(
 
     valid_acc_top5 = torch.tensor(top5.avg).to(args.local_rank)
     if args.distributed:
+        dist.barrier()
         acc_tensor_list = [
             torch.zeros_like(valid_acc_top5) for r in range(args.world_size)
         ]
@@ -151,6 +171,7 @@ def infer(
 
     loss_rank = torch.tensor(objs.avg).to(args.local_rank)
     if args.distributed:
+        dist.barrier()
         loss_list = [torch.zeros_like(loss_rank) for r in range(args.world_size)]
         dist.all_gather(loss_list, loss_rank)
         avg_loss = torch.mean(torch.stack(loss_list))
@@ -212,7 +233,11 @@ def train_x_epochs(
             args.lr_peak_epoch,
             _epochs,
             args.lr,
+            args,
         )
+        if train_acc == 0 and train_obj == 0:
+            return [0, 0, 0, 0, 0, False]
+
         scheduler.step()
         # logging.info('Train_acc %f', train_acc)
         epoch_duration = time.time() - epoch_start
@@ -235,18 +260,23 @@ def train_x_epochs(
                 args.lr_tta,
                 args.fast,
             )
+            if valid_acc_top1 == 0 and valid_acc_top5 == 0:
+                return [0, 0, 0, 0, 0, False]
             # logging.info('Epoch %d, Valid_acc_top1 %f, Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f', epoch, valid_acc_top1, valid_acc_top5, best_acc_top1, best_acc_top5)
             avg_top1_val, avg_top5_val = valid_acc_top1, valid_acc_top5
 
             if global_rank == 0 and wandb_con is not None:
+                commit = True if epoch < _epochs - 1 else False
                 wandb_con.log(
                     {
                         "valid_acc_top1": avg_top1_val,
                         "valid_acc_top5": avg_top5_val,
                         "v_loss": valid_obj,
                     },
-                    commit=True,
+                    commit=commit,
                 )
+                if epoch == _epochs - 1:
+                    wandb_con.log({'Train Time': time.time() - train_sttime}, commit=True)
             if avg_top5_val > best_acc_top5:
                 best_acc_top5 = avg_top5_val
             if avg_top1_val > best_acc_top1:
@@ -306,7 +336,7 @@ def train_x_epochs(
             wandb_art.add_file(f"{args.save}/f_model.pth")
             wandb_con.log_artifact(wandb_art)
 
-    return [train_acc, train_obj, avg_top1_val, avg_top5_val, valid_obj]
+    return [train_acc, train_obj, avg_top1_val, avg_top5_val, valid_obj, True]
 
 
 def infer_tv(
@@ -323,7 +353,11 @@ def infer_tv(
             input, target = input.to(args.local_rank), target.to(args.local_rank)
             logits = model(input.contiguous(memory_format=torch.channels_last))
             if lr_tta:
-                sss = model(torch.flip(input, dims=[3]).contiguous(memory_format=torch.channels_last))
+                sss = model(
+                    torch.flip(input, dims=[3]).contiguous(
+                        memory_format=torch.channels_last
+                    )
+                )
                 logits += sss
             if criterion is not None:
                 loss = criterion(logits, target)
@@ -385,3 +419,43 @@ def infer_tv(
         avg_loss = None
 
     return avg_top1_val, avg_top5_val, avg_loss
+
+
+def dry_run(design, platform, mode, criterion, args):
+    from torch.cuda.amp import GradScaler
+    logging.info('Performing dry run on design with peak resolution...')
+    scaler = GradScaler()
+    train_queue, valid_queue, dl = get_ffcv_loaders(args.local_rank, args)
+    dl.decoder.output_size = (args.max_res, args.max_res)
+
+    model = Network(design=args.design, platform=platform, mode=mode)
+    model = model.to(memory_format=torch.channels_last)
+    model = model.to(f"cuda:{args.local_rank}")
+    dist.barrier()
+
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model)
+    optimizer, scheduler = utils.create_optimizer(
+        model, args.lr, args.weight_decay, args
+    )
+    _, success, _ = train(
+        0,
+        train_queue,
+        valid_queue,
+        model,
+        criterion,
+        optimizer,
+        scaler,
+        100,
+        fast=True,
+        lr_peak_epoch=2,
+        epochs=1,
+        argslr=args.lr,
+        args=args,
+    )
+    del train_queue, valid_queue, dl, model, optimizer, scheduler
+    if success:
+        logging.info('Design trainable...')
+    torch.cuda.empty_cache()
+    gc.collect()
+    return success

@@ -18,8 +18,10 @@ from thop import profile
 
 import auxiliary.utils as utils
 from trainval.trainval import train_x_epochs
+from trainval.trainval import dry_run
 from dataloader.ffcv_dataloader import get_ffcv_loaders
 from auxiliary.utils import CrossEntropyLabelSmooth
+from auxiliary.utils import create_optimizer
 from models.efficientnet import efficientnet_b0 as Network
 from searchables import searchables
 
@@ -70,6 +72,8 @@ def profile_model(input_size, design, platform, mode):
     macs, params = macs / 1000000, params / 1000000
     del model_temp
     print(f"MFLOPS: {macs}, MPARAMS: {params}")
+    torch.cuda.empty_cache()
+    gc.collect()
     return macs, params
 
 
@@ -135,7 +139,7 @@ def main():
         local_rank = int(os.environ["SLURM_LOCALID"])
         world_size = int(os.environ["SLURM_NTASKS"])
         iplist = os.environ["SLURM_JOB_NODELIST"]
-        job_id = int(os.environ['SLURM_JOB_ID'])
+        job_id = int(os.environ["SLURM_JOB_ID"])
         ip = subprocess.getoutput(f"scontrol show hostname {iplist} | head -n1")
         setup_for_distributed(global_rank == 0)
     elif args.distributed and args.cluster == "local":
@@ -168,26 +172,28 @@ def main():
         World Size {world_size}, Job ID {args.job_id}"
     )
     if global_rank == 0:
-        utils.create_exp_dir(args.save, scripts_to_save=glob.glob("**/*.py", recursive=True))
+        utils.create_exp_dir(
+            args.save, scripts_to_save=glob.glob("**/*.py", recursive=True)
+        )
     wandb_con = None
     wandb_art = None
     wandb_metadata_dir = None
     if USE_WANDB:
         wandb_metadata_dir = args.save
         import wandb
-        os.environ["WANDB_API_KEY"] =\
-            "166a45fa2ad2b2db9ec555119b273a3a9bdacc41"
+
+        os.environ["WANDB_API_KEY"] = "166a45fa2ad2b2db9ec555119b273a3a9bdacc41"
         os.environ["WANDB_ENTITY"] = "europa1610"
         os.environ["WANDB_PROJECT"] = "NASBenchFPGA"
         wandb_con = wandb.init(
             project="NASBenchFPGA",
             entity="europa1610",
-            name=args.note+f'_{args.job_id}',
+            name=args.note + f"_{args.job_id}",
             settings=wandb.Settings(code_dir="."),
             dir=wandb_metadata_dir,
         )
-        wandb_art = wandb.Artifact(name=f'train-code-jobid{job_id}', type='code')
-        wandb_art.add_dir(os.path.join(args.save, 'scripts'))
+        wandb_art = wandb.Artifact(name=f"train-code-jobid{job_id}", type="code")
+        wandb_art.add_dir(os.path.join(args.save, "scripts"))
         wandb_con.log_artifact(wandb_art)
     else:
         wandb_con = None
@@ -227,6 +233,9 @@ def main():
 
     # FFCV loader here
     args.in_memory = True
+    train_success = True
+    m = 0
+    models_to_eval = 1000
 
     if args.distributed:
         setup_distributed(
@@ -237,26 +246,45 @@ def main():
     criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
         f"cuda:{local_rank}"
     )
-    for m in range(1000):
+    while m < models_to_eval:
         args.model_num = m
         dist.barrier()
-        args.design = searchables.RandomSearchable()#EfficientNetB0Conf(d=1)#.RandomSearchable()
-        logging.info('Job ID: %d, Model Number: %d, Design = \n%s', args.job_id, args.model_num, str(np.array(args.design)))
-        platform, mode = 'fpga', 'train'
+        args.design = (
+            searchables.RandomSearchable()
+        )  # EfficientNetB0Conf(d=1)#.RandomSearchable()
+        logging.info(
+            "Job ID: %d, Model Number: %d, Design = \n%s",
+            args.job_id,
+            args.model_num,
+            str(np.array(args.design)),
+        )
+        platform, mode = "fpga", "train"
+        '''
+        trainable = dry_run(
+            design=args.design,
+            platform=platform,
+            mode=mode,
+            criterion=criterion,
+            args=args,
+        )
+        if not trainable:
+            logging.info(
+                "Design not trainable due to GPU mem overflows...\nMoving to next design..."
+            )
+            continue
+        '''
         model = Network(design=args.design, platform=platform, mode=mode)
-        args.macs, args.params = profile_model((1, 3, 224, 224),
-                                               design=args.design,
-                                               platform=platform,
-                                               mode=mode)
+        args.macs, args.params = profile_model(
+            (1, 3, 224, 224), design=args.design, platform=platform, mode=mode
+        )
         model = model.to(memory_format=torch.channels_last)
         model = model.to(f"cuda:{local_rank}")
         dist.barrier()
 
         if args.distributed:
             model = torch.nn.parallel.DistributedDataParallel(model)
-        optimizer, scheduler = create_optimizer(model, args.lr,
-                                                args.weight_decay, args)
-        train_acc, train_loss, valid_t1, _, valid_loss = train_x_epochs(
+        optimizer, scheduler = create_optimizer(model, args.lr, args.weight_decay, args)
+        train_acc, train_loss, valid_t1, _, valid_loss, train_success = train_x_epochs(
             args.epochs,
             scheduler,
             dl,
@@ -271,47 +299,18 @@ def main():
             wandb_con,
             args,
         )
-        logging.info("Job ID: %d, Model Number: %d, Model Acc: %f", args.job_id, args.model_num, valid_t1)
+        logging.info(
+            "Job ID: %d, Model Number: %d, Train Success: %s, Model Acc: %f",
+            args.job_id,
+            args.model_num,
+            str(train_success),
+            valid_t1,
+        )
         del model, optimizer, scheduler
         torch.cuda.empty_cache()
         gc.collect()
-
-
-def create_optimizer(model, lr, weight_decay, args):
-    parameter_group_names = {}
-    parameter_group_vars = {}
-    for name, param in model.named_parameters():
-        if not param.requires_grad:
-            continue  # frozen weights
-        if len(param.shape) == 1 or name.endswith(".bias"):
-            group_name = "no_decay"
-            this_weight_decay = 0.0
-        else:
-            group_name = "decay"
-            this_weight_decay = weight_decay
-
-        if group_name not in parameter_group_names:
-            scale = 1.0
-
-            parameter_group_names[group_name] = {
-                "weight_decay": this_weight_decay,
-                "params": [],
-                "lr_scale": scale,
-            }
-            parameter_group_vars[group_name] = {
-                "weight_decay": this_weight_decay,
-                "params": [],
-                "lr_scale": scale,
-            }
-
-        parameter_group_vars[group_name]["params"].append(param)
-        parameter_group_names[group_name]["params"].append(name)
-    parameters = list(parameter_group_vars.values())
-    optimizer = torch.optim.SGD(parameters, lr=1, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, args.epochs)
-
-    return optimizer, scheduler
+        if train_success:
+            m += 1
 
 
 if __name__ == "__main__":

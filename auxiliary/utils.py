@@ -264,6 +264,43 @@ def load(model, model_path):
     model.load_state_dict(torch.load(model_path))
 
 
+def create_optimizer(model, lr, weight_decay, args):
+    parameter_group_names = {}
+    parameter_group_vars = {}
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue  # frozen weights
+        if len(param.shape) == 1 or name.endswith(".bias"):
+            group_name = "no_decay"
+            this_weight_decay = 0.0
+        else:
+            group_name = "decay"
+            this_weight_decay = weight_decay
+
+        if group_name not in parameter_group_names:
+            scale = 1.0
+
+            parameter_group_names[group_name] = {
+                "weight_decay": this_weight_decay,
+                "params": [],
+                "lr_scale": scale,
+            }
+            parameter_group_vars[group_name] = {
+                "weight_decay": this_weight_decay,
+                "params": [],
+                "lr_scale": scale,
+            }
+
+        parameter_group_vars[group_name]["params"].append(param)
+        parameter_group_names[group_name]["params"].append(name)
+    parameters = list(parameter_group_vars.values())
+    optimizer = torch.optim.SGD(parameters, lr=1, momentum=0.9)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, args.epochs)
+
+    return optimizer, scheduler
+
+
 class CrossEntropyLabelSmooth(nn.Module):
     def __init__(self, num_classes, epsilon):
         super(CrossEntropyLabelSmooth, self).__init__()
