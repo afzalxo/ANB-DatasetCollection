@@ -10,7 +10,6 @@ import torch.distributed as dist
 import auxiliary.utils as utils
 
 from models.efficientnet import efficientnet_b0 as Network
-from dataloader.ffcv_dataloader import get_ffcv_loaders
 
 
 def train(
@@ -35,7 +34,6 @@ def train(
     top5 = utils.AvgrageMeter()
     batch_time = utils.AvgrageMeter()
     model.train()
-
     lr_start, lr_end = utils.get_cyclic_lr(
         epoch, argslr, epochs, lr_peak_epoch
     ), utils.get_cyclic_lr(epoch + 1, argslr, epochs, lr_peak_epoch)
@@ -43,31 +41,40 @@ def train(
     lrs = np.interp(np.arange(iters), [0, iters], [lr_start, lr_end])
     rank0_finished = torch.zeros(1, dtype=torch.int)
     iterator = train_queue
+    if args.distributed:
+        dist.barrier()
     for step, (input, target) in enumerate(iterator):
-        if fast and step > 10:
+        if fast and step > report_freq:
             # Dry run to ensure trainability
-            return 0, 1, None
+            break
         for param_group in optimizer.param_groups:
             param_group["lr"] = lrs[step]
 
         b_start = time.time()
 
         optimizer.zero_grad(set_to_none=True)
-        try:
-            with autocast():
-                logits = model(input.contiguous(memory_format=torch.channels_last))
-                loss = criterion(logits, target)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-        except RuntimeError:
-            print("Ran out of GPU memory...")
-            rank0_finished[0] = 1
-            dist.broadcast(rank0_finished, src=args.local_rank)
-            return 0, 0, None
+        if rank0_finished[0] == 0:
+            try:
+                with autocast():
+                    logits = model(input.contiguous(memory_format=torch.channels_last))
+                    loss = criterion(logits, target)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            except RuntimeError:
+                print(f'Rank {args.local_rank} ran out of GPU memory...')
+                rank0_finished[0] = 1
+                #return 0, 0, None
+        if step % report_freq == 0:
+            dist.barrier()
+            dist.broadcast(rank0_finished, src=0, async_op=False)
+            dist.barrier()
         if rank0_finished[0] == 1:
             # This conditional ensures that when one GPU runs out of memory, remaining GPUs abandon training
-            return 0, 0, None
+            #dist.broadcast(rank0_finished, src=args.local_rank)
+            #dist.barrier()
+            #return 0, 0, None
+            continue
         batch_time.update(time.time() - b_start)
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         n = input.size(0)
@@ -93,7 +100,10 @@ def train(
                 batch_time.avg,
             )
         del loss, logits, target
-
+    if args.distributed:
+        dist.barrier()
+    if rank0_finished[0] == 1:
+        return 0, 0, None
     return top1.avg, objs.avg, scaler
 
 
@@ -236,16 +246,18 @@ def train_x_epochs(
             args,
         )
         if train_acc == 0 and train_obj == 0:
+            if args.distributed:
+                dist.barrier()
             return [0, 0, 0, 0, 0, False]
 
         scheduler.step()
         # logging.info('Train_acc %f', train_acc)
         epoch_duration = time.time() - epoch_start
+        logging.info(
+            "Epoch %d, Train_acc %f, Epoch time: %ds",
+            epoch, train_acc, epoch_duration
+        )
         if global_rank == 0:
-            print(
-                "Epoch %d, Train_acc %f, Epoch time: %ds"
-                % (epoch, train_acc, epoch_duration)
-            )
             if wandb_con is not None:
                 commit = True if epoch <= _epochs - 4 else False
                 wandb_con.log({"t_acc": train_acc, "t_loss": train_obj}, commit=commit)
@@ -281,12 +293,21 @@ def train_x_epochs(
                 best_acc_top5 = avg_top5_val
             if avg_top1_val > best_acc_top1:
                 best_acc_top1 = avg_top1_val
+            '''
             if global_rank == 0:
                 print(
                     "Epoch %d, Valid_acc_top1 %f,\
                     Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f"
                     % (epoch, avg_top1_val, avg_top5_val, best_acc_top1, best_acc_top5)
                 )
+            '''
+            logging.info(
+                "Epoch %d, Valid_acc_top1 %f,\
+                Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f",
+                epoch, avg_top1_val, avg_top5_val, best_acc_top1, best_acc_top5
+            )
+        if args.distributed:
+            dist.barrier()
     train_endtime = time.time()
     if global_rank == 0:
         training_config_dict = {
@@ -335,6 +356,8 @@ def train_x_epochs(
             )
             wandb_art.add_file(f"{args.save}/f_model.pth")
             wandb_con.log_artifact(wandb_art)
+    if args.distributed:
+        dist.barrier()
 
     return [train_acc, train_obj, avg_top1_val, avg_top5_val, valid_obj, True]
 
@@ -422,6 +445,7 @@ def infer_tv(
 
 
 def dry_run(design, platform, mode, criterion, args):
+    from dataloader.ffcv_dataloader import get_ffcv_loaders
     from torch.cuda.amp import GradScaler
     logging.info('Performing dry run on design with peak resolution...')
     scaler = GradScaler()
@@ -446,7 +470,7 @@ def dry_run(design, platform, mode, criterion, args):
         criterion,
         optimizer,
         scaler,
-        100,
+        report_freq=10,
         fast=True,
         lr_peak_epoch=2,
         epochs=1,

@@ -1,21 +1,26 @@
+import argparse
 import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.stats import kendalltau
 
-df = pd.read_csv('./junk.csv')
-df.columns = ['JID', 'Model Num', 'ImageNet Top-1 Acc', 'Acc Top-5', 'MACs', 'MParams', 'Train Time']
-df['Train Time'] = -1*df['Train Time']
+parser = argparse.ArgumentParser('')
+parser.add_argument('--csv_path', type=str, default=None, help='Path to dataset csv')
+args = parser.parse_args()
+
+df = pd.read_csv(args.csv_path)
+df = df.drop(df.columns[list(range(8, 8+28))], axis=1)
+df.columns = ['Junk', 'JID', 'Model Num', 'Acc Top-1', 'Acc Top-5', 'MACs', 'MParams', 'Train Time']
 df['Training Regime'] = 'Proxified'
 df.insert(0, 'Model Index', range(len(df)))
 
 #df = df[df['MParams'] > 8]
 
-df['Ranks'] = df['ImageNet Top-1 Acc'].rank(ascending=False)
+df['Ranks'] = df['Acc Top-1'].rank(ascending=False)
 
-scatter = sns.scatterplot(data=df, x='MParams', y='ImageNet Top-1 Acc', hue='Train Time', size='MACs', marker='o')
+scatter = sns.scatterplot(data=df, x='MParams', y='Acc Top-1', hue='Train Time', size='MACs', marker='o')
 #scatter.legend_.remove()
-plt.savefig('./exact.pdf')
+plt.savefig('./scatter_acc_vs_complexity.pdf')
 #print(df)
 
 '''

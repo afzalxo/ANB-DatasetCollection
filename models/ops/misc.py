@@ -235,7 +235,7 @@ class SqueezeExcitation(torch.nn.Module):
         input_channels: int,
         squeeze_channels: int,
         activation: Callable[..., torch.nn.Module] = torch.nn.ReLU,
-        scale_activation: Callable[..., torch.nn.Module] = torch.nn.Sigmoid,
+        scale_activation: Callable[..., torch.nn.Module] = torch.nn.Hardsigmoid,
     ) -> None:
         super().__init__()
         self.avgpool = torch.nn.AdaptiveAvgPool2d(1)

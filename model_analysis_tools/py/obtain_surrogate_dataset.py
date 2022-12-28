@@ -20,7 +20,15 @@ def main():
     finished = False
     models_done = 0
     version = 0
-    job_ids = [10237, 10239, 10240, 10241, 10265, 10266, 10268, 10269, 10270, 10272, 10277, 10279, 10280, 10286, 10298, 10325, 10338, 10342, 10344, 10345, 10347, 10348, 10350, 2358639, 10355, 10354, 10356, 10357, 10359, 10360, 10361, 10362, 10363, 10372, 10373, 10376, 10377, 10379, 10380, 10381, 10382, 10383, 10384, 10386]
+    '''
+    job_ids = [10237, 10239, 10240, 10241, 10265, 10266, 10268, 10269, 10270, 10272,
+               10277, 10279, 10280, 10286, 10298, 10325, 10338, 10342, 10344, 10345,
+               10347, 10348, 10350, 2358639, 10355, 10354, 10356, 10357, 10359, 10360,
+               10361, 10362, 10363, 10372, 10373, 10376, 10377, 10379, 10380, 10381,
+               10382, 10383, 10384, 10386, 10387, 10402, 10403, 10404, 10406, 10407,
+               10432, 10433, 10435, 10436, 10457, 10458, 10459, 10461, 10463]
+    '''
+    job_ids = [10432, 10457, 10458, 10459, 10461, 10463]
     job_dict = {}
     table_rows = []
     with open(os.path.join(log_dir, 'csv', 'results.csv'), 'a+') as fh:
@@ -55,7 +63,7 @@ def main():
                     writer.writerow(row)
 
                     # Dumping to JSON
-                    arch_json = {} 
+                    arch_json = {}
                     metrics_json = {}
                     model_info_json = {}
                     with open(os.path.join(log_dir, 'jsons', f'result_{models_done}.json'), 'w') as js:
@@ -74,11 +82,17 @@ def main():
 
                     version += 1
                     models_done += 1
+                    missing_counter = 0
                     # os.remove(os.path.join(model_dir, 'f_model.pth'))
                 except:
-                    print(f'Finished loading model metadata for job {jid}...')
-                    finished = True
-                    version = 0
+                    print(f'Cant find job {jid}, model {version}, missing counter {missing_counter}...')
+                    version += 1
+                    missing_counter += 1
+                    if missing_counter == 10:
+                        print(f'Finished loading model metadata for job {jid}...')
+                        finished = True
+                        version = 0
+                        missing_counter = 0
             job_dict[jid] = metadata_dict
 
     columns = ['Model Num', 'Job ID', 'Model Rank', 'Top-1', 'Top-5', 'MACs', 'MParams', 'Train Time']
@@ -96,7 +110,7 @@ def main():
     artifact = wandb.Artifact('surrogate_dataset', 'dataset')
     artifact.add(table, 'surrogate_dataset')
     wandb_con.log_artifact(artifact)
-    
+
 
 if __name__ == '__main__':
     main()
