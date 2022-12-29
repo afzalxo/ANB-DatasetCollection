@@ -23,7 +23,7 @@ from trainval.trainval import dry_run
 from dataloader.ffcv_dataloader import get_ffcv_loaders
 from auxiliary.utils import CrossEntropyLabelSmooth
 from auxiliary.utils import create_optimizer
-from models.efficientnet import efficientnet_b0 as Network
+from models.accelbenchnet import AccelNet as Network
 from searchables import searchables
 
 warnings.filterwarnings("ignore")
@@ -148,7 +148,7 @@ def main():
         local_rank = int(os.environ["LOCAL_RANK"])
         global_rank = int(os.environ["LOCAL_RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
-        job_id = int(os.getpid())
+        job_id = 10001# int(os.getpid())
         ip = "127.0.0.1"
         setup_for_distributed(global_rank == 0)
     else:
@@ -248,7 +248,7 @@ def main():
     args.in_memory = True
     train_success = True
     m = 0
-    models_to_eval = 1000
+    models_to_eval = 300
 
     train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
     criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
@@ -265,7 +265,7 @@ def main():
             "Job ID: %d, Model Number: %d, Design: \n%s",
             args.job_id,
             args.model_num,
-            str(np.array(args.design)),
+            np.array(args.design),
         )
         platform, mode = "fpga", "train"
         """

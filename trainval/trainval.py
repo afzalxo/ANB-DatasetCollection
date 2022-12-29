@@ -9,7 +9,7 @@ import torch.distributed as dist
 
 import auxiliary.utils as utils
 
-from models.efficientnet import efficientnet_b0 as Network
+from models.accelbenchnet import AccelNet as Network
 
 
 def train(
@@ -39,11 +39,12 @@ def train(
     ), utils.get_cyclic_lr(epoch + 1, argslr, epochs, lr_peak_epoch)
     iters = len(train_queue)
     lrs = np.interp(np.arange(iters), [0, iters], [lr_start, lr_end])
-    rank0_finished = torch.zeros(1, dtype=torch.int)
+    rank_finished = torch.zeros(args.world_size, dtype=torch.int)
     iterator = train_queue
-    if args.distributed:
-        dist.barrier()
     for step, (input, target) in enumerate(iterator):
+        if args.distributed:
+            # Synchronize at every step
+            dist.barrier()
         if fast and step > report_freq:
             # Dry run to ensure trainability
             break
@@ -53,7 +54,7 @@ def train(
         b_start = time.time()
 
         optimizer.zero_grad(set_to_none=True)
-        if rank0_finished[0] == 0:
+        if rank_finished[args.local_rank] == 0:
             try:
                 with autocast():
                     logits = model(input.contiguous(memory_format=torch.channels_last))
@@ -63,17 +64,15 @@ def train(
                 scaler.update()
             except RuntimeError:
                 print(f'Rank {args.local_rank} ran out of GPU memory...')
-                rank0_finished[0] = 1
+                rank_finished[args.local_rank] = 1
                 #return 0, 0, None
         if step % report_freq == 0:
             dist.barrier()
-            dist.broadcast(rank0_finished, src=0, async_op=False)
+            # dist.broadcast(rank0_finished, src=0, async_op=False)
+            dist.all_reduce(rank_finished, op=dist.ReduceOp.SUM)
             dist.barrier()
-        if rank0_finished[0] == 1:
+        if any(rank_finished):
             # This conditional ensures that when one GPU runs out of memory, remaining GPUs abandon training
-            #dist.broadcast(rank0_finished, src=args.local_rank)
-            #dist.barrier()
-            #return 0, 0, None
             continue
         batch_time.update(time.time() - b_start)
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
@@ -102,7 +101,7 @@ def train(
         del loss, logits, target
     if args.distributed:
         dist.barrier()
-    if rank0_finished[0] == 1:
+    if any(rank_finished):
         return 0, 0, None
     return top1.avg, objs.avg, scaler
 

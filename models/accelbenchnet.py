@@ -12,9 +12,8 @@ from models.ops.misc import Conv2dNormActivation, SqueezeExcitation
 from auxiliary.utils import _make_divisible
 
 __all__ = [
-    "EfficientNet",
-    "efficientnet_b0",
-    "efficientnet_v2_s",
+    "AccelNASBenchNet",
+    "AccelNet",
 ]
 
 
@@ -26,6 +25,7 @@ class _MBConvConfig:
     input_channels: int
     out_channels: int
     num_layers: int
+    se_operation: bool
     block: Callable[..., nn.Module]
 
     @staticmethod
@@ -45,6 +45,7 @@ class MBConvConfig(_MBConvConfig):
         input_channels: int,
         out_channels: int,
         num_layers: int,
+        se_operation: bool,
         width_mult: float = 1.0,
         depth_mult: float = 1.0,
         block: Optional[Callable[..., nn.Module]] = None,
@@ -61,6 +62,7 @@ class MBConvConfig(_MBConvConfig):
             input_channels,
             out_channels,
             num_layers,
+            se_operation,
             block,
         )
 
@@ -79,6 +81,7 @@ class FusedMBConvConfig(_MBConvConfig):
         input_channels: int,
         out_channels: int,
         num_layers: int,
+        se_operation: bool,
         block: Optional[Callable[..., nn.Module]] = None,
     ) -> None:
         if block is None:
@@ -90,6 +93,7 @@ class FusedMBConvConfig(_MBConvConfig):
             input_channels,
             out_channels,
             num_layers,
+            se_operation,
             block,
         )
 
@@ -101,7 +105,6 @@ class MBConv(nn.Module):
         stochastic_depth_prob: float,
         norm_layer: Callable[..., nn.Module],
         activation_layer: Callable[..., nn.Module],
-        se_layer: Callable[..., nn.Module] = SqueezeExcitation,
         platform: str = 'gpu',
         mode: str = 'train',
     ) -> None:
@@ -143,10 +146,9 @@ class MBConv(nn.Module):
         )
 
         # squeeze and excitation (only if to be deployed on GPU)
-        if platform == 'gpu':
-            #if activation_layer == nn.SiLU:
+        if cnf.se_operation:
             squeeze_channels = max(1, cnf.input_channels // 4)
-            layers.append(se_layer(expanded_channels, squeeze_channels, activation=partial(nn.SiLU, inplace=True)))
+            layers.append(SqueezeExcitation(expanded_channels, squeeze_channels, activation=partial(activation_layer, inplace=True)))
 
         # project
         layers.append(
@@ -248,7 +250,7 @@ class FusedMBConv(nn.Module):
         return result
 
 
-class EfficientNet(nn.Module):
+class AccelNASBenchNet(nn.Module):
     def __init__(
         self,
         inverted_residual_setting: Sequence[Union[MBConvConfig, FusedMBConvConfig]],
@@ -261,17 +263,6 @@ class EfficientNet(nn.Module):
         mode: str = "train",
         **kwargs: Any,
     ) -> None:
-        """
-        EfficientNet V1 and V2 main class
-
-        Args:
-            inverted_residual_setting (Sequence[Union[MBConvConfig, FusedMBConvConfig]]): Network structure
-            dropout (float): The droupout probability
-            stochastic_depth_prob (float): The stochastic depth probability
-            num_classes (int): Number of classes
-            norm_layer (Optional[Callable[..., nn.Module]]): Module specifying the normalization layer to use
-            last_channel (int): The number of channels on the penultimate layer
-        """
         super().__init__()
         self.mode = mode
         self.platform = platform
@@ -396,7 +387,7 @@ class EfficientNet(nn.Module):
         return self._forward_impl(x)
 
 
-def _efficientnet(
+def _accelnasbenchnet(
     inverted_residual_setting: Sequence[Union[MBConvConfig, FusedMBConvConfig]],
     dropout: float,
     last_channel: Optional[int],
@@ -404,9 +395,9 @@ def _efficientnet(
     progress: bool,
     mode: str,
     **kwargs: Any,
-) -> EfficientNet:
+) -> AccelNASBenchNet:
 
-    model = EfficientNet(
+    model = AccelNASBenchNet(
         inverted_residual_setting,
         dropout,
         last_channel=last_channel,
@@ -420,126 +411,40 @@ def _efficientnet(
 
 def gen_model_config(
     layer_confs: list,
-) -> Tuple[Sequence[Union[MBConvConfig, FusedMBConvConfig]], Optional[int]]:
+) -> Tuple[Sequence[Union[MBConvConfig, FusedMBConvConfig]]]:
     inverted_residual_setting: Sequence[Union[MBConvConfig, FusedMBConvConfig]]
     inverted_residual_setting = []
     for conf in layer_confs:
+        # se_op = True if conf[7] == 'True' else False
         if conf[0] == "MB":
             inverted_residual_setting.append(
-                MBConvConfig(conf[1], conf[2], conf[3], conf[4], conf[5], conf[6])
+                MBConvConfig(expand_ratio=conf[1], kernel=conf[2], stride=conf[3], input_channels=conf[4], out_channels=conf[5], num_layers=conf[6], se_operation=conf[7])
             )
         elif conf[0] == "FMB":
             inverted_residual_setting.append(
-                FusedMBConvConfig(conf[1], conf[2], conf[3], conf[4], conf[5], conf[6])
+                FusedMBConvConfig(conf[1], conf[2], conf[3], conf[4], conf[5], conf[6], conf[7])
             )
         else:
             raise ValueError(f"Unsupported block type {conf[0]}")
-    return inverted_residual_setting, None
+    return inverted_residual_setting
 
 
-def _efficientnet_conf(
-    arch: str,
-    **kwargs: Any,
-) -> Tuple[Sequence[Union[MBConvConfig, FusedMBConvConfig]], Optional[int]]:
-    inverted_residual_setting: Sequence[Union[MBConvConfig, FusedMBConvConfig]]
-    if arch.startswith("efficientnet_b"):
-        bneck_conf = partial(
-            MBConvConfig,
-            width_mult=kwargs.pop("width_mult"),
-            depth_mult=kwargs.pop("depth_mult"),
-        )
-        inverted_residual_setting = [
-            bneck_conf(1, 3, 1, 32, 16, 1),
-            bneck_conf(6, 3, 2, 16, 24, 2),
-            bneck_conf(6, 5, 2, 24, 40, 2),
-            bneck_conf(6, 3, 2, 40, 80, 3),
-            bneck_conf(6, 5, 1, 80, 112, 3),
-            bneck_conf(6, 5, 2, 112, 192, 4),
-            bneck_conf(6, 3, 1, 192, 320, 1),
-        ]
-        last_channel = None
-    elif arch.startswith("efficientnet_v2_s"):
-        inverted_residual_setting = [
-            FusedMBConvConfig(1, 3, 1, 24, 24, 2),
-            FusedMBConvConfig(4, 3, 2, 24, 48, 4),
-            FusedMBConvConfig(4, 3, 2, 48, 64, 4),
-            MBConvConfig(4, 3, 2, 64, 128, 6),
-            MBConvConfig(6, 3, 1, 128, 160, 9),
-            MBConvConfig(6, 3, 2, 160, 256, 15),
-        ]
-        last_channel = 1280
-    else:
-        raise ValueError(f"Unsupported model type {arch}")
-
-    return inverted_residual_setting, last_channel
-
-
-def efficientnet_b0(
+def AccelNet(
     *,
     design: list,
     platform: str = "gpu",
     mode: str = "train",
     progress: bool = True,
     **kwargs: Any,
-) -> EfficientNet:
-    """EfficientNet B0 model architecture from the `EfficientNet: Rethinking Model Scaling for Convolutional
-    Neural Networks <https://arxiv.org/abs/1905.11946>`_ paper.
-
-    Args:
-        weights (:class:`~torchvision.models.EfficientNet_B0_Weights`, optional): The
-            pretrained weights to use. See
-            :class:`~torchvision.models.EfficientNet_B0_Weights` below for
-            more details, and possible values. By default, no pre-trained
-            weights are used.
-        progress (bool, optional): If True, displays a progress bar of the
-            download to stderr. Default is True.
-        **kwargs: parameters passed to the ``torchvision.models.efficientnet.EfficientNet``
-            base class. Please refer to the `source code
-            <https://github.com/pytorch/vision/blob/main/torchvision/models/efficientnet.py>`_
-            for more details about this class.
-    .. autoclass:: torchvision.models.EfficientNet_B0_Weights
-        :members:
-    """
-
-    inverted_residual_setting, last_channel = gen_model_config(design)
-    return _efficientnet(
+) -> AccelNASBenchNet:
+    inverted_residual_setting = gen_model_config(design)
+    last_channel = None
+    return _accelnasbenchnet(
         inverted_residual_setting,
         0.2,
         last_channel,
         platform,
         progress,
         mode=mode,
-        **kwargs,
-    )
-
-
-def efficientnet_v2_s(*, progress: bool = True, **kwargs: Any) -> EfficientNet:
-    """
-    Constructs an EfficientNetV2-S architecture from
-    `EfficientNetV2: Smaller Models and Faster Training <https://arxiv.org/abs/2104.00298>`_.
-
-    Args:
-        weights (:class:`~torchvision.models.EfficientNet_V2_S_Weights`, optional): The
-            pretrained weights to use. See
-            :class:`~torchvision.models.EfficientNet_V2_S_Weights` below for
-            more details, and possible values. By default, no pre-trained
-            weights are used.
-        progress (bool, optional): If True, displays a progress bar of the
-            download to stderr. Default is True.
-        **kwargs: parameters passed to the ``torchvision.models.efficientnet.EfficientNet``
-            base class. Please refer to the `source code
-            <https://github.com/pytorch/vision/blob/main/torchvision/models/efficientnet.py>`_
-            for more details about this class.
-    .. autoclass:: torchvision.models.EfficientNet_V2_S_Weights
-        :members:
-    """
-
-    inverted_residual_setting, last_channel = _efficientnet_conf("efficientnet_v2_s")
-    return _efficientnet(
-        inverted_residual_setting,
-        0.2,
-        last_channel,
-        progress=progress,
-        norm_layer=partial(nn.BatchNorm2d, eps=1e-03),
         **kwargs,
     )
