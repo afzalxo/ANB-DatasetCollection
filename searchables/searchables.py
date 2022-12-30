@@ -44,21 +44,13 @@ def RandomSearchable():
     kernel_sizes = [3, 5]
     exp = [1, 4, 6]
     layers = [1, 2, 3]
+    squeeze_excite_options = [True, False]
     layer_confs = []
     bchoices = random.choices(blocktypes, k=num_blocks)
     kchoices = random.choices(kernel_sizes, k=num_blocks)
     echoices = random.choices(exp, k=num_blocks)
     lchoices = random.choices(layers, k=num_blocks)
-    # echoices[0] = 1
-    # lchoices[0] = 1
-    # lchoices = []
-    # for i in range(num_blocks):
-    #    l = random.choice(layers)
-    #    if l != layers[0]:
-    #        lind = layers.index(l)
-    #        del layers[:lind]
-    #    lchoices.append(l)
-
+    sechoices = random.choices(squeeze_excite_options, k=num_blocks)
     for i in range(num_blocks):
         conf = [
             bchoices[i],
@@ -68,6 +60,7 @@ def RandomSearchable():
             ich[i],
             och[i],
             lchoices[i],
+            sechoices[i],
         ]
         layer_confs.append(conf)
     return layer_confs

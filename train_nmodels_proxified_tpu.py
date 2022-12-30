@@ -26,27 +26,14 @@ import torch_xla.utils.utils as xu
 
 
 import auxiliary.utils as utils
-from trainval.trainval import train_x_epochs
-from trainval.trainval import dry_run
-from dataloader.ffcv_dataloader import get_ffcv_loaders
+from trainval.trainval import train_x_epochs_tpu
+from dataloader.torchvision_dataloader import build_torchvision_loader_tpu
 from auxiliary.utils import CrossEntropyLabelSmooth
 from auxiliary.utils import create_optimizer
 from models.accelbenchnet import AccelNet as Network
 from searchables import searchables
 
 warnings.filterwarnings("ignore")
-
-
-def setup_distributed(rank, local_rank, address, port, world_size, cluster):
-    os.environ["MASTER_ADDR"] = address
-    os.environ["MASTER_PORT"] = port
-    # os.environ['NCCL_IB_DISABLE'] = '1'
-    # os.environ['NCCL_SOCKET_IFNAME'] = 'eth0'
-    print("Setting up dist training rank %d" % rank)
-    dist.init_process_group("xla", rank=rank, world_size=world_size)
-    new_rank_xm = xm.get_ordinal()
-    world_size_xm = xm.xrt_world_size()
-    print(new_rank_xm, world_size_xm)
 
 
 def cleanup_distributed():
@@ -69,25 +56,174 @@ def setup_for_distributed(is_master):
     __builtin__.print = print
 
 
-def profile_model(input_size, design, platform, mode, local_rank):
+def profile_model(input_size, design, platform, mode):
     model_temp = Network(design=design, platform=platform, mode=mode)
-    input = torch.randn(input_size)#.to(f'cuda:{local_rank}')
+    input = torch.randn(input_size)
     macs, params = profile(model_temp, inputs=(input,))
     macs, params = macs / 1000000, params / 1000000
     del model_temp
     #print(f"MFLOPS: {macs}, MPARAMS: {params}")
     logging.info('MFLOPS %f, MPARAMS: %f', macs, params)
-    torch.cuda.empty_cache()
     gc.collect()
     return macs, params
 
 
-def map_fn(index, flags):
-    device = xm.xla_device()
-    ordinal = xm.get_ordinal()
-    print(device, ordinal, index)
-    return 0
+def map_fn(index, args):
+    local_rank = global_rank = args.local_rank = args.global_rank = xm.get_ordinal()
+    args.world_size = world_size = xm.xrt_world_size()
 
+    args.use_wandb = True if global_rank == 0 else False
+
+    args.save = "{}exp-{}-{}-{}".format(
+        args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M%S")
+    )
+    print(
+        f"Global Rank {global_rank}, Local Rank {local_rank},\
+        World Size {world_size}, Job ID {args.job_id}"
+    )
+    np.random.seed(args.seed)
+    cudnn.benchmark = True
+    torch.manual_seed(args.seed)
+    cudnn.enabled = True
+    torch.cuda.manual_seed(args.seed)
+    random.seed(args.seed)
+    torch.set_printoptions(precision=4)
+    np.set_printoptions(precision=4)
+    if global_rank == 0:
+        utils.create_exp_dir(
+            args.save, scripts_to_save=glob.glob("**/*.py", recursive=True)
+        )
+    log_format = f"%(asctime)s - Rank {args.global_rank} - %(message)s"
+    logging.basicConfig(
+        stream=sys.stdout,
+        level=logging.INFO,
+        format=log_format,
+        datefmt="%m/%d %I:%M:%S %p",
+    )
+    fh = logging.FileHandler(os.path.join(args.save, f"log_rank{args.global_rank}.txt"))
+    fh.setFormatter(logging.Formatter(log_format))
+    logging.getLogger().addHandler(fh)
+
+    wandb_con = None
+    wandb_art = None
+    wandb_metadata_dir = None
+    if args.use_wandb and global_rank == 0:
+        wandb_metadata_dir = args.save
+        import wandb
+
+        os.environ["WANDB_API_KEY"] = "166a45fa2ad2b2db9ec555119b273a3a9bdacc41"
+        os.environ["WANDB_ENTITY"] = "europa1610"
+        os.environ["WANDB_PROJECT"] = "NASBenchFPGA"
+        wandb_con = wandb.init(
+            project="NASBenchFPGA",
+            entity="europa1610",
+            name=args.note + f"_{args.job_id}",
+            settings=wandb.Settings(code_dir="."),
+            dir=wandb_metadata_dir,
+        )
+        wandb_art = wandb.Artifact(name=f"train-code-jobid{args.job_id}", type="code")
+        wandb_art.add_dir(os.path.join(args.save, "scripts"))
+        wandb_con.log_artifact(wandb_art)
+        wandb_con.config.update(args)
+        logging.info('Saving py files to wandb...')
+        wandb_con.save("./*.py")
+        wandb_con.save("./trainval/*.py")
+        wandb_con.save("./dataloader/*.py")
+        wandb_con.save("./auxiliary/*.py")
+        wandb_con.save("./models/*.py")
+        wandb_con.save("./models/ops/*.py")
+        wandb_con.save("./searchables/*.py")
+        logging.info('Saved py files to wandb...')
+        args.wandb_con = wandb_con
+    else:
+        wandb_con = None
+        wandb_art = None
+
+    logging.info("args = %s", args)
+
+    # FFCV loader here
+    args.in_memory = True
+    train_success = True
+    m = 0
+    models_to_eval = 1
+
+    train_queue, valid_queue = build_torchvision_loader_tpu(args)
+    criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
+        f"cuda:{local_rank}"
+    )
+    args.writer = None
+    if xm.is_master_ordinal():
+        import torch_xla.test.test_utils as test_utils
+        args.writer = test_utils.get_summary_writer(args.save)
+    device = xm.xla_device()
+    while m < models_to_eval:
+        args.model_num = m
+        args.design = (
+            searchables.RandomSearchable()
+        )  # EfficientNetB0Conf(d=1)#.RandomSearchable()
+        logging.info(
+            "Job ID: %d, Model Number: %d, Design: \n%s",
+            args.job_id,
+            args.model_num,
+            np.array(args.design),
+        )
+        platform, mode = "fpga", "train"
+        """
+        trainable = dry_run(
+            design=args.design,
+            platform=platform,
+            mode=mode,
+            criterion=criterion,
+            args=args,
+        )
+        if not trainable:
+            logging.info(
+                "Design not trainable due to GPU mem overflows...\nMoving to next design..."
+            )
+            continue
+        """
+        args.macs, args.params = None, None
+        if args.global_rank == 0:
+            args.macs, args.params = profile_model(
+                (1, 3, 224, 224),
+                design=args.design,
+                platform=platform,
+                mode=mode,
+            )
+        model = Network(design=args.design, platform=platform, mode=mode)
+        # model = model.to(memory_format=torch.channels_last)
+        model = model.to(device)
+
+        # if args.distributed:
+        #    model = torch.nn.parallel.DistributedDataParallel(model)
+        optimizer, scheduler = create_optimizer(model, args.lr, args.weight_decay, args)
+        train_acc, train_loss, valid_t1, _, valid_loss, train_success = train_x_epochs_tpu(
+            args.epochs,
+            scheduler,
+            train_queue,
+            valid_queue,
+            model,
+            criterion,
+            optimizer,
+            args.global_rank,
+            args.local_rank,
+            args.world_size,
+            wandb_con,
+            args,
+        )
+        logging.info(
+            "Job ID: %d, Model Number: %d, Train Success: %s, Model Acc: %f",
+            args.job_id,
+            args.model_num,
+            str(train_success),
+            valid_t1,
+        )
+        del model, optimizer, scheduler
+        gc.collect()
+        if train_success:
+            m += 1
+
+#### Map Function
 
 def main():
     if not torch.cuda.is_available():
@@ -161,201 +297,25 @@ def main():
         job_id = 10001# int(os.getpid())
         ip = "127.0.0.1"
         setup_for_distributed(global_rank == 0)
-    elif args.distributed and args.cluster == "local":
-        local_rank = int(os.environ["LOCAL_RANK"])
-        global_rank = int(os.environ["LOCAL_RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
+    elif args.distributed and args.cluster == "tpu":
         os.environ['XLA_USE_BF16'] = 1 # Enable bfloat16
         job_id = 20000
         ip = "127.0.0.1"
     else:
-        local_rank = 0
         global_rank = 0
-        world_size = 1
         job_id = 0
         ip = "localhost"
 
-    args.world_size = world_size
-    args.local_rank = local_rank
-    args.global_rank = global_rank
     args.ip = ip
     args.job_id = job_id
 
-    flags = None
+    flags = args
     xmp.spawn(map_fn, args=(flags,), nprocs=8, start_method='fork')
     print('Finished...')
     exit(0)
 
 
-    args.use_wandb = True if global_rank == 0 else False
-
-    args.save = "{}exp-{}-{}-{}".format(
-        args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M%S")
-    )
-    print(
-        f"Global Rank {global_rank}, Local Rank {local_rank},\
-        World Size {world_size}, Job ID {args.job_id}"
-    )
-    np.random.seed(args.seed)
-    cudnn.benchmark = True
-    torch.manual_seed(args.seed)
-    cudnn.enabled = True
-    torch.cuda.manual_seed(args.seed)
-    random.seed(args.seed)
-    if args.distributed:
-        setup_distributed(
-            global_rank, local_rank, ip, args.port, world_size, args.cluster
-        )
-        dist.barrier()
-    torch.set_printoptions(precision=4)
-    np.set_printoptions(precision=4)
-    if global_rank == 0:
-        utils.create_exp_dir(
-            args.save, scripts_to_save=glob.glob("**/*.py", recursive=True)
-        )
-    if args.distributed:
-        dist.barrier()
-    # if args.global_rank == 0:
-    log_format = f"%(asctime)s - Rank {args.global_rank} - %(message)s"
-    logging.basicConfig(
-        stream=sys.stdout,
-        level=logging.INFO,
-        format=log_format,
-        datefmt="%m/%d %I:%M:%S %p",
-    )
-    fh = logging.FileHandler(os.path.join(args.save, f"log_rank{args.global_rank}.txt"))
-    fh.setFormatter(logging.Formatter(log_format))
-    logging.getLogger().addHandler(fh)
-
-    wandb_con = None
-    wandb_art = None
-    wandb_metadata_dir = None
-    if args.use_wandb and global_rank == 0:
-        wandb_metadata_dir = args.save
-        import wandb
-
-        os.environ["WANDB_API_KEY"] = "166a45fa2ad2b2db9ec555119b273a3a9bdacc41"
-        os.environ["WANDB_ENTITY"] = "europa1610"
-        os.environ["WANDB_PROJECT"] = "NASBenchFPGA"
-        wandb_con = wandb.init(
-            project="NASBenchFPGA",
-            entity="europa1610",
-            name=args.note + f"_{args.job_id}",
-            settings=wandb.Settings(code_dir="."),
-            dir=wandb_metadata_dir,
-        )
-        wandb_art = wandb.Artifact(name=f"train-code-jobid{job_id}", type="code")
-        wandb_art.add_dir(os.path.join(args.save, "scripts"))
-        wandb_con.log_artifact(wandb_art)
-        wandb_con.config.update(args)
-        logging.info('Saving py files to wandb...')
-        wandb_con.save("./*.py")
-        wandb_con.save("./trainval/*.py")
-        wandb_con.save("./dataloader/*.py")
-        wandb_con.save("./auxiliary/*.py")
-        wandb_con.save("./models/*.py")
-        wandb_con.save("./models/ops/*.py")
-        wandb_con.save("./searchables/*.py")
-        logging.info('Saved py files to wandb...')
-        args.wandb_con = wandb_con
-    else:
-        wandb_con = None
-        wandb_art = None
-
-    if args.distributed:
-        dist.barrier()
-
-    logging.info("args = %s", args)
-
-    # FFCV loader here
-    args.in_memory = True
-    train_success = True
-    m = 0
-    models_to_eval = 300
-
-    train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
-    criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
-        f"cuda:{local_rank}"
-    )
-    while m < models_to_eval:
-        args.model_num = m
-        if args.distributed:
-            dist.barrier()
-        args.design = (
-            searchables.RandomSearchable()
-        )  # EfficientNetB0Conf(d=1)#.RandomSearchable()
-        logging.info(
-            "Job ID: %d, Model Number: %d, Design: \n%s",
-            args.job_id,
-            args.model_num,
-            np.array(args.design),
-        )
-        platform, mode = "fpga", "train"
-        """
-        trainable = dry_run(
-            design=args.design,
-            platform=platform,
-            mode=mode,
-            criterion=criterion,
-            args=args,
-        )
-        if not trainable:
-            logging.info(
-                "Design not trainable due to GPU mem overflows...\nMoving to next design..."
-            )
-            continue
-        """
-        args.macs, args.params = None, None
-        if args.global_rank == 0:
-            args.macs, args.params = profile_model(
-                (1, 3, 224, 224),
-                design=args.design,
-                platform=platform,
-                mode=mode,
-                local_rank=args.local_rank,
-            )
-        if args.distributed:
-            dist.barrier()
-        model = Network(design=args.design, platform=platform, mode=mode)
-        model = model.to(memory_format=torch.channels_last)
-        model = model.to(f"cuda:{local_rank}")
-
-        if args.distributed:
-            dist.barrier()
-            model = torch.nn.parallel.DistributedDataParallel(model)
-            dist.barrier()
-        optimizer, scheduler = create_optimizer(model, args.lr, args.weight_decay, args)
-        train_acc, train_loss, valid_t1, _, valid_loss, train_success = train_x_epochs(
-            args.epochs,
-            scheduler,
-            dl,
-            train_queue,
-            valid_queue,
-            model,
-            criterion,
-            optimizer,
-            args.global_rank,
-            args.local_rank,
-            args.world_size,
-            wandb_con,
-            args,
-        )
-        logging.info(
-            "Job ID: %d, Model Number: %d, Train Success: %s, Model Acc: %f",
-            args.job_id,
-            args.model_num,
-            str(train_success),
-            valid_t1,
-        )
-        if args.distributed:
-            dist.barrier()
-        del model, optimizer, scheduler
-        torch.cuda.empty_cache()
-        gc.collect()
-        if train_success:
-            m += 1
-
-
+    
 if __name__ == "__main__":
     start_time = time.time()
     main()
