@@ -270,14 +270,12 @@ def train_x_epochs_tpu(
                 best_acc_top5 = avg_top5_val
             if avg_top1_val > best_acc_top1:
                 best_acc_top1 = avg_top1_val
-            '''
             if global_rank == 0:
                 print(
                     "Epoch %d, Valid_acc_top1 %f,\
                     Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f"
                     % (epoch, avg_top1_val, avg_top5_val, best_acc_top1, best_acc_top5)
                 )
-            '''
             logging.info(
                 "Epoch %d, Valid_acc_top1 %f,\
                 Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f",

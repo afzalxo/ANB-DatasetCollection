@@ -26,7 +26,7 @@ import torch_xla.utils.utils as xu
 
 
 import auxiliary.utils as utils
-from trainval.trainval import train_x_epochs_tpu
+from trainval.trainval_tpu import train_x_epochs_tpu
 from dataloader.torchvision_dataloader import build_torchvision_loader_tpu
 from auxiliary.utils import CrossEntropyLabelSmooth
 from auxiliary.utils import create_optimizer
@@ -69,10 +69,10 @@ def profile_model(input_size, design, platform, mode):
 
 
 def map_fn(index, args):
-    local_rank = global_rank = args.local_rank = args.global_rank = xm.get_ordinal()
-    args.world_size = world_size = xm.xrt_world_size()
+    local_rank = global_rank = args.local_rank = args.global_rank = index#xm.get_ordinal()
+    args.world_size = world_size = 8#xm.xrt_world_size()
 
-    args.use_wandb = True if global_rank == 0 else False
+    args.use_wandb = True if global_rank == 0 and args.use_wandb else False
 
     args.save = "{}exp-{}-{}-{}".format(
         args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M%S")
@@ -93,16 +93,16 @@ def map_fn(index, args):
         utils.create_exp_dir(
             args.save, scripts_to_save=glob.glob("**/*.py", recursive=True)
         )
-    log_format = f"%(asctime)s - Rank {args.global_rank} - %(message)s"
-    logging.basicConfig(
-        stream=sys.stdout,
-        level=logging.INFO,
-        format=log_format,
-        datefmt="%m/%d %I:%M:%S %p",
-    )
-    fh = logging.FileHandler(os.path.join(args.save, f"log_rank{args.global_rank}.txt"))
-    fh.setFormatter(logging.Formatter(log_format))
-    logging.getLogger().addHandler(fh)
+        log_format = f"%(asctime)s - Rank {args.global_rank} - %(message)s"
+        logging.basicConfig(
+            stream=sys.stdout,
+            level=logging.INFO,
+            format=log_format,
+            datefmt="%m/%d %I:%M:%S %p",
+        )
+        fh = logging.FileHandler(os.path.join(args.save, f"log_rank{args.global_rank}.txt"))
+        fh.setFormatter(logging.Formatter(log_format))
+        logging.getLogger().addHandler(fh)
 
     wandb_con = None
     wandb_art = None
@@ -226,9 +226,6 @@ def map_fn(index, args):
 #### Map Function
 
 def main():
-    if not torch.cuda.is_available():
-        logging.info("No GPU device available")
-        sys.exit(1)
     CLASSES = 1000
     IMAGENET_MEAN = np.array([0.485, 0.456, 0.406]) * 255
     IMAGENET_STD = np.array([0.229, 0.224, 0.225]) * 255
@@ -298,7 +295,7 @@ def main():
         ip = "127.0.0.1"
         setup_for_distributed(global_rank == 0)
     elif args.distributed and args.cluster == "tpu":
-        os.environ['XLA_USE_BF16'] = 1 # Enable bfloat16
+        os.environ['XLA_USE_BF16'] = '1' # Enable bfloat16
         job_id = 20000
         ip = "127.0.0.1"
     else:

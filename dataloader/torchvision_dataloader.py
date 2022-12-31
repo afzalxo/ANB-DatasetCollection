@@ -53,9 +53,9 @@ def build_torchvision_loader_tpu(args):
     t.append(transforms.ToTensor())
     t.append(transforms.Normalize(mean, std))
     tforms = transforms.Compose(t)
-    root = os.path.join(args.data_path, "train")
+    root = os.path.join(args.train_dataset, "train")
     train_dataset = datasets.ImageFolder(root, transform=tforms)
-    root = os.path.join(args.data_path, "val")
+    root = os.path.join(args.train_dataset, "val")
     test_dataset = datasets.ImageFolder(root, transform=tforms)
     train_sampler, test_sampler = None, None
     if xm.xrt_world_size() > 1:
@@ -74,14 +74,14 @@ def build_torchvision_loader_tpu(args):
         batch_size=args.train_batch_size,
         sampler=train_sampler,
         drop_last=True,
-        shuffle=True,
+        # shuffle=True,
         num_workers=args.num_workers)
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=args.val_batch_size,
         sampler=test_sampler,
         drop_last=False,
-        shuffle=False,
+        # shuffle=False,
         num_workers=args.num_workers)
 
     return train_loader, test_loader
