@@ -91,91 +91,50 @@ def train_epoch_tpu(
             )
             '''
         del loss, logits, target
-    return top1.avg, objs.avg, scaler
+    return top1.avg, objs.avg
 
 
-def infer(
-    valid_queue, model, criterion, args, report_freq=100, lr_tta=True, fast=False
+def infer_tpu(
+    valid_queue, model, criterion, args, epoch, report_freq=100, lr_tta=True, fast=False
 ):
 
     objs = utils.AvgrageMeter()
     top1 = utils.AvgrageMeter()
     top5 = utils.AvgrageMeter()
     model.eval()
+    import torch_xla.test.test_utils as test_utils
 
-    from torch.cuda.amp import autocast
+    for step, (input, target) in enumerate(valid_queue):
+        logits = model(input)
+        loss = criterion(logits, target)
 
-    with torch.no_grad():
-        with autocast():
-            for step, (input, target) in enumerate(valid_queue):
-                try:
-                    logits = model(input.contiguous(memory_format=torch.channels_last))
-                    # if lr_tta:
-                    #    logits += model(torch.flip(input, dims=[3]).contiguous(memory_format=torch.channels_last))
-                    loss = criterion(logits, target)
+        prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
+        n = input.size(0)
+        objs.update(loss.data.item(), n)
+        top1.update(prec1.data.item(), n)
+        top5.update(prec5.data.item(), n)
 
-                    prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-                    n = input.size(0)
-                    objs.update(loss.data.item(), n)
-                    top1.update(prec1.data.item(), n)
-                    top5.update(prec5.data.item(), n)
-                except RuntimeError:
-                    # raise RuntimeError("Ran out of GPU memory...")
-                    print("Ran out of GPU memory...")
-                    return 0, 0, 0
-
-                if step % report_freq == 0:
-                    end_time = time.time()
-                    if step == 0:
-                        duration = 0
-                        start_time = time.time()
-                    else:
-                        duration = end_time - start_time
-                        start_time = time.time()
-                    logging.info(
-                        "VALID Step: %03d Objs: %e R1: %f R5: %f Duration: %ds",
-                        step,
-                        objs.avg,
-                        top1.avg,
-                        top5.avg,
-                        duration,
-                    )
-                del loss, logits, target
-
-    valid_acc_top1 = torch.tensor(top1.avg).to(args.local_rank)
-    if args.distributed:
-        dist.barrier()
-        acc_tensor_list = [
-            torch.zeros_like(valid_acc_top1) for r in range(args.world_size)
-        ]
-        dist.all_gather(acc_tensor_list, valid_acc_top1)
-        avg_top1_val = torch.mean(torch.stack(acc_tensor_list))
-        del acc_tensor_list
-    else:
-        avg_top1_val = valid_acc_top1
-
-    valid_acc_top5 = torch.tensor(top5.avg).to(args.local_rank)
-    if args.distributed:
-        dist.barrier()
-        acc_tensor_list = [
-            torch.zeros_like(valid_acc_top5) for r in range(args.world_size)
-        ]
-        dist.all_gather(acc_tensor_list, valid_acc_top5)
-        avg_top5_val = torch.mean(torch.stack(acc_tensor_list))
-        del acc_tensor_list
-    else:
-        avg_top5_val = valid_acc_top5
-
-    loss_rank = torch.tensor(objs.avg).to(args.local_rank)
-    if args.distributed:
-        dist.barrier()
-        loss_list = [torch.zeros_like(loss_rank) for r in range(args.world_size)]
-        dist.all_gather(loss_list, loss_rank)
-        avg_loss = torch.mean(torch.stack(loss_list))
-        del loss_list
-    else:
-        avg_loss = loss_rank
-    del loss_rank
+        if step % report_freq == 0:
+            end_time = time.time()
+            xm.add_step_closure(test_utils.print_test_update, args=(args.local_rank, None, epoch, step))
+            '''
+            if step == 0:
+                duration = 0
+                start_time = time.time()
+            else:
+                duration = end_time - start_time
+                start_time = time.time()
+            logging.info(
+                "VALID Step: %03d Objs: %e R1: %f R5: %f Duration: %ds",
+                step,
+                objs.avg,
+                top1.avg,
+                top5.avg,
+                duration,
+            )
+            '''
+        del loss, logits, target
+    avg_top1_val, avg_top5_val, avg_loss = top1.avg, top5.avg, objs.avg
     return avg_top1_val, avg_top5_val, avg_loss
 
 
@@ -210,8 +169,7 @@ def train_x_epochs_tpu(
             print("Warming-up Epoch: %d, LR: %e" % (epoch, lr * (epoch + 1) / 5.0))
 
         epoch_start = time.time()
-
-        train_acc, train_obj, scaler = train_epoch_tpu(
+        train_acc, train_obj = train_epoch_tpu(
             epoch,
             train_queue,
             valid_queue,
@@ -238,19 +196,17 @@ def train_x_epochs_tpu(
                 commit = True if epoch <= _epochs - 4 else False
                 wandb_con.log({"t_acc": train_acc, "t_loss": train_obj}, commit=commit)
         # validation
-        '''
-        if epoch > _epochs - 4:
-            valid_acc_top1, valid_acc_top5, valid_obj = infer(
+        if epoch > -1:#_epochs - 4:
+            valid_acc_top1, valid_acc_top5, valid_obj = infer_tpu(
                 valid_queue,
                 model,
                 criterion,
                 args,
+                epoch,
                 args.report_freq,
                 args.lr_tta,
                 args.fast,
             )
-            if valid_acc_top1 == 0 and valid_acc_top5 == 0:
-                return [0, 0, 0, 0, 0, False]
             # logging.info('Epoch %d, Valid_acc_top1 %f, Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f', epoch, valid_acc_top1, valid_acc_top5, best_acc_top1, best_acc_top5)
             avg_top1_val, avg_top5_val = valid_acc_top1, valid_acc_top5
 
@@ -281,7 +237,6 @@ def train_x_epochs_tpu(
                 Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f",
                 epoch, avg_top1_val, avg_top5_val, best_acc_top1, best_acc_top5
             )
-        '''
     train_endtime = time.time()
     if global_rank == 0:
         training_config_dict = {
