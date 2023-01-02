@@ -193,7 +193,8 @@ def train_x_epochs_tpu(
         )
         if global_rank == 0:
             if wandb_con is not None:
-                commit = True if epoch <= _epochs - 4 else False
+                #commit = True if epoch <= _epochs - 4 else False
+                commit = False
                 wandb_con.log({"t_acc": train_acc, "t_loss": train_obj}, commit=commit)
         # validation
         if epoch > -1:#_epochs - 4:
@@ -211,17 +212,17 @@ def train_x_epochs_tpu(
             avg_top1_val, avg_top5_val = valid_acc_top1, valid_acc_top5
 
             if global_rank == 0 and wandb_con is not None:
-                commit = True if epoch < _epochs - 1 else False
+                #commit = True if epoch < _epochs - 1 else False
+                commit = True
                 wandb_con.log(
                     {
                         "valid_acc_top1": avg_top1_val,
                         "valid_acc_top5": avg_top5_val,
                         "v_loss": valid_obj,
+                        "Train Time": time.time() - train_sttime,
                     },
                     commit=commit,
                 )
-                if epoch == _epochs - 1:
-                    wandb_con.log({'Train Time': time.time() - train_sttime}, commit=True)
             if avg_top5_val > best_acc_top5:
                 best_acc_top5 = avg_top5_val
             if avg_top1_val > best_acc_top1:
@@ -260,8 +261,8 @@ def train_x_epochs_tpu(
             "macs": args.macs,
             "params": args.params,
             "train_time": train_sttime - train_endtime,
-            "best_acc_top1": best_acc_top1.cpu().numpy(),
-            "best_acc_top5": best_acc_top5.cpu().numpy(),
+            "best_acc_top1": best_acc_top1,
+            "best_acc_top5": best_acc_top5,
             "architecture": args.design,
         }
         utils.save_checkpoint(

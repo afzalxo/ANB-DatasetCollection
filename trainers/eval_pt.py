@@ -16,11 +16,13 @@ import warnings
 from thop import profile
 
 import auxiliary.utils as utils
-from trainval.trainval import train_x_epochs
-from dataloader.ffcv_dataloader import get_ffcv_loaders
+# from dataloader.ffcv_dataloader import get_ffcv_loaders
+
+from dataloader.torchvision_dataloader import build_torchvision_loader
 from auxiliary.utils import CrossEntropyLabelSmooth
 from models.efficientnet import efficientnet_b0 as Network
 from searchables import searchables
+from trainval.trainval import infer_tv
 
 warnings.filterwarnings("ignore")
 
@@ -62,8 +64,8 @@ def setup_for_distributed(is_master):
     __builtin__.print = print
 
 
-def profile_model(input_size, design, platform, mode):
-    model_temp = Network(design=design, platform='fpga', mode='train')
+def profile_model(init_channels, classes, design, stages, input_size):
+    model_temp = Network(init_channels, classes, design, stages)
     input = torch.randn(input_size)
     macs, params = profile(model_temp, inputs=(input,))
     macs, params = macs / 1000000, params / 1000000
@@ -83,6 +85,8 @@ def main():
 
     parser = argparse.ArgumentParser("")
     parser.add_argument("--cfg_path")
+    parser.add_argument("--model_pth")
+    parser.add_argument("--data_path")
     args = parser.parse_args()
 
     cfg_path = args.cfg_path
@@ -134,7 +138,8 @@ def main():
         local_rank = int(os.environ["SLURM_LOCALID"])
         world_size = int(os.environ["SLURM_NTASKS"])
         iplist = os.environ["SLURM_JOB_NODELIST"]
-        ip = subprocess.getoutput(f"scontrol show hostname {iplist} | head -n1")
+        ip = subprocess.getoutput(
+            f"scontrol show hostname {iplist} | head -n1")
         setup_for_distributed(global_rank == 0)
     elif args.distributed and args.cluster == "local":
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -154,18 +159,16 @@ def main():
     args.ip = ip
 
     USE_WANDB = args.use_wandb if global_rank == 0 else False
-
     args.save = "{}exp-{}-{}".format(
         args.save, args.note, time.strftime("%Y%m%d-%H%M%S")
     )
     print(
         f"Global Rank {global_rank}, Local Rank {local_rank},\
-        World Size {world_size}"
+            World Size {world_size}"
     )
     if global_rank == 0:
         utils.create_exp_dir(args.save, scripts_to_save=glob.glob("**/*.py"))
     wandb_con = None
-    wandb_art = None
     wandb_metadata_dir = None
     if USE_WANDB:
         wandb_metadata_dir = args.save
@@ -182,11 +185,8 @@ def main():
             settings=wandb.Settings(code_dir="."),
             dir=wandb_metadata_dir,
         )
-        wandb_art = wandb.Artifact(name='train-code-nasfpga', type='code')
-        wandb_art.add_dir('./')
     else:
         wandb_con = None
-        wandb_art = None
 
     if global_rank == 0:
         log_format = "%(asctime)s %(message)s"
@@ -224,55 +224,44 @@ def main():
     torch.set_printoptions(precision=4)
     np.set_printoptions(precision=4)
 
-    # FFCV loader here
     args.in_memory = True
 
     if args.distributed:
         setup_distributed(
             global_rank, local_rank, ip, args.port, world_size, args.cluster
         )
-
-    train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
+    valid_queue, dl = build_torchvision_loader(args)
+    # train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
     criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
         f"cuda:{local_rank}"
     )
-    # criterion = torch.nn.CrossEntropyLoss(label_smoothing=args.label_smoothing).to(f'cuda:{local_rank}')
-    args.design = design = searchables.EfficientNetB0Conf(d=0.5)
-    logging.info('Design = \n%s', str(np.array(args.design)))
-    model = Network(design=design, platform='fpga', mode='train')
-    # input = torch.randn((1, 3, 224, 224))
+    # criterion = torch.nn.CrossEntropyLoss(
+    # label_smoothing=args.label_smoothing).to(f'cuda:{local_rank}')
+    design = searchables.EfficientNetB0Conf(d=0.5)
+    model = Network(design=design, platform="fpga", mode='val')
+    # input = torch.randn((1,3,224,224))
     # macs, params = profile(model, inputs=(input, ))
     # args.macs, args.params = macs/1000000, params/1000000
-    args.macs, args.params = profile_model((1, 3, 224, 224),
-                                           design=args.design,
-                                           platform='fpga',
-                                           mode='train')
+    # print(args.macs, args.params)
+    # args.macs, args.params = profile_model(args.init_channels, args.CLASSES, design=design, stages=stages, input_size=(1,3,32,32))
     model = model.to(memory_format=torch.channels_last)
     model = model.to(f"cuda:{local_rank}")
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model)
-    optimizer, scheduler = create_optimizer(model, args.lr,
-                                            args.weight_decay, args)
-    train_acc, train_loss, valid_t1, _, valid_loss = train_x_epochs(
-        args.epochs,
-        scheduler,
-        dl,
-        train_queue,
-        valid_queue,
-        model,
-        criterion,
-        optimizer,
-        args.global_rank,
-        args.local_rank,
-        args.world_size,
-        wandb_con,
-        wandb_art,
-        args,
+    sd = torch.load("f_model.pth")
+    print(sd["model_info"])
+    print(sd["best_acc_top1"])
+    model.load_state_dict(sd["state_dict"])
+    optimizer, scheduler = create_optimizer(model,
+                                            args.lr, args.weight_decay, args)
+    valid_acc_top1, valid_acc_top5, valid_obj = infer_tv(
+        valid_queue, model, criterion, args, args.report_freq, args.fast
     )
-    logging.info("Model Acc: %f", valid_t1)
-    with open(os.path.join(args.save, "design_accs.txt"), "a+") as fh:
-        fh.write("Acc: %s" % (str(valid_t1)))
+
+    logging.info("Model Acc: %f", valid_acc_top1)
+    # with open(os.path.join(args.save, 'design_accs.txt'), 'a+') as fh:
+    #    fh.write('Acc: %s' %(str(valid_t1)))
 
 
 def create_optimizer(model, lr, weight_decay, args):
@@ -306,8 +295,8 @@ def create_optimizer(model, lr, weight_decay, args):
         parameter_group_names[group_name]["params"].append(name)
     parameters = list(parameter_group_vars.values())
     optimizer = torch.optim.SGD(parameters, lr=1, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, args.epochs)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
+                                                           args.epochs)
 
     return optimizer, scheduler
 
