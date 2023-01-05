@@ -9,14 +9,15 @@ import pandas as pd
 
 
 def main():
+    contains_se = True
     log_dir = 'dataset_log/'
     log_dir = os.path.join(
-        log_dir, "{}-{}".format('exp', time.strftime("%Y%m%d-%H%M%S"))
+        log_dir, "{}-{}".format('exp-withSE-partial', time.strftime("%Y%m%d-%H%M%S"))
     )
     os.makedirs(os.path.join(log_dir, 'csv'))
     os.makedirs(os.path.join(log_dir, 'jsons'))
 
-    wandb_con = wandb.init(project='NASBenchFPGA', entity='europa1610', name='models_metadata', group='surrogate_dataset')
+    wandb_con = wandb.init(project='NASBenchFPGA', entity='europa1610', name='models_metadata-withSE-partial', group='surrogate_dataset')
     finished = False
     models_done = 0
     version = 0
@@ -27,8 +28,9 @@ def main():
                10361, 10362, 10363, 10372, 10373, 10376, 10377, 10379, 10380, 10381,
                10382, 10383, 10384, 10386, 10387, 10402, 10403, 10404, 10406, 10407,
                10432, 10433, 10435, 10436, 10457, 10458, 10459, 10461, 10463]
-    '''
     job_ids = [10432, 10457, 10458, 10459, 10461, 10463]
+    '''
+    job_ids = [10474, 10475, 10476, 10477, 10478, 10479, 10000, 10481, 10001]
     job_dict = {}
     table_rows = []
     with open(os.path.join(log_dir, 'csv', 'results.csv'), 'a+') as fh:
@@ -57,6 +59,9 @@ def main():
                     row.append([int(b) for b in exps])
                     row.append([int(b) for b in ker])
                     row.append([int(b) for b in layers])
+                    if contains_se:
+                        se = list(np.array(md['architecture'])[:, 7])
+                        row.append([on for on in se])
                     row = [item for sublist in row for item in sublist]
                     # print(row)
                     table_rows.append(row)
@@ -72,6 +77,8 @@ def main():
                             arch_json[f'block{i}_k'] = int(ker[i])
                             arch_json[f'block{i}_e'] = int(exps[i])
                             arch_json[f'block{i}_l'] = int(layers[i])
+                            if contains_se:
+                                arch_json[f'block{i}_se'] = se[i]
                         metrics_json['val_top1'] = float(md['best_acc_top1'])
                         metrics_json['val_top5'] = float(md['best_acc_top5'])
                         metrics_json['train_time'] = float(md['train_time'])
@@ -104,6 +111,9 @@ def main():
         columns.append(f'Kernel {i}')
     for i in range(7):
         columns.append(f'Layers {i}')
+    if contains_se:
+        for i in range(7):
+            columns.append(f'SE {i}')
     df = pd.DataFrame(table_rows, columns=columns)
     print(df.head())
     table = wandb.Table(dataframe=df)

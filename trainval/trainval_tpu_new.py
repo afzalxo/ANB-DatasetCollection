@@ -46,29 +46,38 @@ def train_epoch_tpu(
     top5 = utils.AvgrageMeter()
     batch_time = utils.AvgrageMeter()
     model.train()
+    '''
     lr_start, lr_end = utils.get_cyclic_lr(
         epoch, argslr, epochs, lr_peak_epoch
     ), utils.get_cyclic_lr(epoch + 1, argslr, epochs, lr_peak_epoch)
     iters = len(train_queue)
     lrs = np.interp(np.arange(iters), [0, iters], [lr_start, lr_end])
+    '''
+    wd_schedule = None
     iterator = train_queue
     for step, (input, target) in enumerate(iterator):
         b_start = time.time()
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = lrs[step]
+        if lr_schedule is not None or wd_schedule is not None and step % args.update_freq == 0:
+            for i, param_group in enumerate(optimizer.param_groups):
+                if lr_schedule is not None:
+                    param_group['lr'] = lr_schedule[it] * param_group['lr_scale']
+                if wd_schedule is not None and param_group['weight_decay'] > 0:
+                    param_group['weight_decay'] = wd_schedule[it]
 
-        optimizer.zero_grad(set_to_none=True)
         logits = model(input) #input.contiguous(memory_format=torch.channels_last))
         loss = criterion(logits, target)
+        loss /= args.update_freq
         loss.backward()
-        xm.optimizer_step(optimizer)
+        if (step + 1) % args.update_freq == 0:
+            xm.optimizer_step(optimizer)
+            optimizer.zero_grad(set_to_none=True)
         tracker.add(args.train_batch_size)
         batch_time.update(time.time() - b_start)
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         n = input.size(0)
-        objs.update(loss, n)
-        top1.update(prec1, n)
-        top5.update(prec5, n)
+        objs.update(loss.data.item(), n)
+        top1.update(prec1.data.item(), n)
+        top5.update(prec5.data.item(), n)
         if step % report_freq == 0:
             # end_time = time.time()
             xm.add_step_closure(_train_update, args=(args.local_rank, step, loss, tracker, epoch, args.writer))
@@ -91,7 +100,7 @@ def train_epoch_tpu(
             )
             '''
         del loss, logits, target
-    return top1.avg.data.item(), objs.avg.data.item()
+    return top1.avg, objs.avg
 
 
 def infer_tpu(
@@ -110,9 +119,9 @@ def infer_tpu(
 
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         n = input.size(0)
-        objs.update(loss, n)
-        top1.update(prec1, n)
-        top5.update(prec5, n)
+        objs.update(loss.data.item(), n)
+        top1.update(prec1.data.item(), n)
+        top5.update(prec5.data.item(), n)
 
         if step % report_freq == 0:
             end_time = time.time()
@@ -135,7 +144,7 @@ def infer_tpu(
             '''
         del loss, logits, target
     avg_top1_val, avg_top5_val, avg_loss = top1.avg, top5.avg, objs.avg
-    return avg_top1_val.data.item(), avg_top5_val.data.item(), avg_loss.data.item()
+    return avg_top1_val, avg_top5_val, avg_loss
 
 
 def train_x_epochs_tpu(

@@ -417,6 +417,8 @@ def gen_model_config(
     for conf in layer_confs:
         # se_op = True if conf[7] == 'True' else False
         if conf[0] == "MB":
+            if type(conf[7]) == str:
+                raise TypeError('Wrong Type Encountered...')
             inverted_residual_setting.append(
                 MBConvConfig(expand_ratio=conf[1], kernel=conf[2], stride=conf[3], input_channels=conf[4], out_channels=conf[5], num_layers=conf[6], se_operation=conf[7])
             )

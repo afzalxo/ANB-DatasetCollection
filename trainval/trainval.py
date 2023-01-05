@@ -6,6 +6,7 @@ import logging
 
 # from torch.cuda.amp import GradScaler, autocast
 import torch.distributed as dist
+from torch.cuda.amp import autocast
 
 import auxiliary.utils as utils
 
@@ -43,11 +44,9 @@ def train(
     iterator = train_queue
     for step, (input, target) in enumerate(iterator):
         if args.distributed:
-            # Synchronize at every step
-            dist.barrier()
+            dist.barrier()  # Synchronize at every step
         if fast and step > report_freq:
-            # Dry run to ensure trainability
-            break
+            break  # Dry run to ensure trainability
         for param_group in optimizer.param_groups:
             param_group["lr"] = lrs[step]
 
@@ -77,9 +76,9 @@ def train(
         batch_time.update(time.time() - b_start)
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         n = input.size(0)
-        objs.update(loss.data.item(), n)
-        top1.update(prec1.data.item(), n)
-        top5.update(prec5.data.item(), n)
+        objs.update(loss, n)
+        top1.update(prec1, n)
+        top5.update(prec5, n)
         if step % report_freq == 0:
             end_time = time.time()
             if step == 0:
@@ -103,7 +102,7 @@ def train(
         dist.barrier()
     if any(rank_finished):
         return 0, 0, None
-    return top1.avg, objs.avg, scaler
+    return top1.avg.data.item(), objs.avg.data.item(), scaler
 
 
 def infer(
@@ -128,9 +127,9 @@ def infer(
 
                     prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
                     n = input.size(0)
-                    objs.update(loss.data.item(), n)
-                    top1.update(prec1.data.item(), n)
-                    top5.update(prec5.data.item(), n)
+                    objs.update(loss, n)
+                    top1.update(prec1, n)
+                    top5.update(prec5, n)
                 except RuntimeError:
                     # raise RuntimeError("Ran out of GPU memory...")
                     print("Ran out of GPU memory...")
@@ -389,9 +388,9 @@ def infer_tv(
             prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
             n = input.size(0)
             if criterion is not None:
-                objs.update(loss.data.item(), n)
-            top1.update(prec1.data.item(), n)
-            top5.update(prec5.data.item(), n)
+                objs.update(loss, n)
+            top1.update(prec1, n)
+            top5.update(prec5, n)
 
             if step % report_freq == 0:
                 end_time = time.time()
@@ -482,3 +481,64 @@ def dry_run(design, platform, mode, criterion, args):
     torch.cuda.empty_cache()
     gc.collect()
     return success
+
+
+def throughput_gpu(valid_queue, model, args, report_freq=100):
+
+    model.eval()
+
+    warmup_reps = 1
+    measurement_reps = 2
+    total_time = 0
+    rep_time = 0
+    prev_rep_time = 0
+    print(f'Warming up for {warmup_reps} repetitions and then averaging {measurement_reps} repetitions for measurements...')
+    throughput_measurements = []
+    with torch.no_grad():
+        with autocast():
+            for rep in range(warmup_reps+measurement_reps):
+                for step, (input, target) in enumerate(valid_queue):
+                    starter, ender = torch.cuda.Event(enable_timing=True, blocking=True), torch.cuda.Event(enable_timing=True, blocking=True)
+                    starter.record()
+                    _ = model(input.contiguous(memory_format=torch.channels_last))
+                    ender.record()
+                    torch.cuda.synchronize()
+                    total_time += starter.elapsed_time(ender)/1000
+                rep_time = total_time - prev_rep_time
+                prev_rep_time = total_time
+                throughput = (len(valid_queue)*args.val_batch_size)/rep_time
+                rep_type = 'WARMUP' if rep < warmup_reps else 'MEASUREMENT'
+                print(f'Rep {rep}:[{rep_type}] Throughput: {throughput}')
+                if rep >= warmup_reps:
+                    throughput_measurements.append(throughput)
+    mean_thr = np.mean(throughput_measurements)
+    std_thr = np.std(throughput_measurements)
+    # throughput = (warmup_reps*len(valid_queue)*args.val_batch_size)/total_time
+    print('==='*10)
+    print(f'Mean: {mean_thr}, Std: {std_thr}')
+    print('==='*10)
+
+    '''
+    valid_queue.batch_size = 1
+    print(f'Measuring latency at batch size {valid_queue.batch_size}, Num Samples {len(valid_queue)}...')
+    num_samp = 10000
+    timings = np.zeros((num_samp,1))
+    with torch.no_grad():
+        with autocast():
+            for step, (input, target) in enumerate(valid_queue):
+                if step >= num_samp:
+                    break
+                starter, ender = torch.cuda.Event(enable_timing=True, blocking=True), torch.cuda.Event(enable_timing=True, blocking=True)
+                starter.record()
+                logits = model(input.contiguous(memory_format=torch.channels_last))
+                ender.record()
+                torch.cuda.synchronize()
+                current_time = starter.elapsed_time(ender)/1000
+                timings[step] = current_time
+    mean_syn = np.sum(timings) / num_samp
+    std_syn = np.std(timings)
+    print('==='*10)
+    print(mean_syn, std_syn)
+    print('==='*10)
+    '''
+    return mean_thr, std_thr
