@@ -3,6 +3,7 @@ import time
 import torch
 import numpy as np
 import logging
+import itertools
 
 # from torch.cuda.amp import GradScaler, autocast
 import torch.distributed as dist
@@ -110,9 +111,9 @@ def infer_tpu(
 
         prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         n = input.size(0)
-        objs.update(loss, n)
-        top1.update(prec1, n)
-        top5.update(prec5, n)
+        objs.update(loss.data.item(), n)
+        top1.update(prec1.data.item(), n)
+        top5.update(prec5.data.item(), n)
 
         if step % report_freq == 0:
             end_time = time.time()
@@ -135,7 +136,94 @@ def infer_tpu(
             '''
         del loss, logits, target
     avg_top1_val, avg_top5_val, avg_loss = top1.avg, top5.avg, objs.avg
-    return avg_top1_val.data.item(), avg_top5_val.data.item(), avg_loss.data.item()
+    return avg_top1_val, avg_top5_val, avg_loss
+
+
+import torch_xla.test.test_utils as test_utils
+def throughput_tpu(
+    valid_queue, model, args, epoch, report_freq=100, lr_tta=True, fast=False
+):
+    objs = utils.AvgrageMeter()
+    top1 = utils.AvgrageMeter()
+    top5 = utils.AvgrageMeter()
+    model.eval()
+    repititions = 1
+    total_time = 0
+    warmup_reps = 0
+    device = xm.xla_device()
+    valid_queue = pl.MpDeviceLoader(valid_queue, device)
+    start_time = time.time()
+    rep_time = []
+    rates = []
+    cur_rate = [torch.zeros(1, device=device)]
+    last_rate = 0
+    tracker = xm.RateTracker()
+    '''
+    with torch.no_grad():
+        for rep in range(2500000):
+            dummy_input = torch.randn((args.val_batch_size, 3,224,224), device=device)#.to(device)
+            logits = model(dummy_input)
+            tracker.add(args.val_batch_size)
+            if rep % report_freq == 0:
+                # end_time = time.time()
+                #xm.add_step_closure(test_utils.print_test_update, args=(args.local_rank, None, epoch, step))
+                xm.mark_step()
+                xm.wait_device_ops()
+                cur_rate = tracker.rate()
+                print(f'Rank: xla:{xm.get_ordinal()}, step: {rep}, Rates: {cur_rate}, {tracker.global_rate()}, Change: {cur_rate-last_rate}')
+                last_rate = cur_rate
+    '''
+    last_thro = 0
+    repititions = 1 
+    report_freq = 50
+    for rep in range(repititions):
+        rep_start = time.time()
+        for step, (input, target) in enumerate(itertools.chain(valid_queue)):
+            #if rep >= warmup_reps:
+            # st = time.time()
+            logits = model(input)
+            # xm.mark_step()
+            # xm.wait_device_ops()
+            # if rep >= warmup_reps:
+            # total_time += time.time() - st
+            xm.mark_step()
+            xm.wait_device_ops()
+            tracker.add(args.val_batch_size)
+            if ((step + 1) % report_freq) == 0:
+                # end_time = time.time()
+                #xm.add_step_closure(test_utils.print_test_update, args=(args.local_rank, None, epoch, step))
+                # old_rate = cur_rate
+                # cur_rate = [torch.tensor(tracker.rate(), device=device)]
+                # xm.all_reduce(xm.REDUCE_SUM, cur_rate)
+                # print(f'Rates: {tracker.rate()}, {tracker.global_rate()}, Sum: {cur_rate}, Change: {cur_rate[0]-old_rate[0]}')
+                
+                cur_rate = tracker.rate()
+                print(f'Rank: {args.local_rank}, step: {step}, Current Rate: {cur_rate}, Global Rate: {tracker.global_rate()}, Rate Change: {cur_rate-last_rate}')
+                last_rate = cur_rate
+                if step+1 >= 300:
+                    rates.append(last_rate)
+                if step+1 == 400:
+                    break
+
+        rep_time.append(time.time() - rep_start)
+        # print(rep_time)
+        # print(rates)
+    # total_time = sum(rep_time[warmup_reps:])
+    mean_thr = np.mean(rates)
+    std_thr = np.std(rates)
+    print(f'Mean: {mean_thr}, Std: {std_thr}')
+
+    # throughput = [torch.tensor(mean_thr, device=device)]
+    # total_time = 0.1
+    # throughput = [torch.tensor(((repititions - warmup_reps) * args.val_batch_size * len(valid_queue))/total_time, device=device)]
+    # print(f'Throughput: {throughput}')
+    # xm.all_reduce(xm.REDUCE_SUM, throughput)
+    # print(f'Summed Throughput: {throughput}')
+    # _std = torch.std(throughput[])
+    # print(f'Summed Std: {_std}')
+
+    # avg_top1_val, avg_top5_val, avg_loss = top1.avg, top5.avg, objs.avg
+    return mean_thr, std_thr
 
 
 def train_x_epochs_tpu(
