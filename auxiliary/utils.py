@@ -10,11 +10,41 @@ import torch.nn as nn
 import torch.nn.functional as F
 import shutil
 import torchvision.transforms as transforms
+import json
 
 
 def softmax(x, axis=0):
     e_x = np.exp(x - np.max(x))
     return e_x / e_x.sum(axis=axis)
+
+
+def config_json_to_list_repr(arch_json):
+    with open(arch_json, "r") as fh:
+        data = json.load(fh)
+
+    # Initialize empty lists for each key
+    values_e = []
+    values_k = []
+    values_l = []
+    values_se = []
+
+    # Iterate through the dictionary and append values to the appropriate list
+    for i in range(7):
+        key = f"block{i}"
+        values_e.append(data[f"{key}_e"])
+        values_k.append(data[f"{key}_k"])
+        values_l.append(data[f"{key}_l"])
+        values_se.append(True if data[f"{key}_se"] else False)
+
+    # Make a list of lists with the values
+    value_lists = [
+        list(map(int, values_e)),
+        list(map(int, values_k)),
+        list(map(int, values_l)),
+        values_se
+    ]
+
+    return value_lists
 
 
 def _restore_weights(old_dict, new_dict, param_storage):
@@ -295,8 +325,7 @@ def create_optimizer(model, lr, weight_decay, args):
         parameter_group_names[group_name]["params"].append(name)
     parameters = list(parameter_group_vars.values())
     optimizer = torch.optim.SGD(parameters, lr=1, momentum=0.9)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, args.epochs)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.epochs)
 
     return optimizer, scheduler
 
@@ -401,13 +430,13 @@ def create_exp_dir(path, scripts_to_save=None):
     if scripts_to_save is not None:
         os.mkdir(os.path.join(path, "scripts"))
         for script in scripts_to_save:
-            if os.path.dirname(script) == '':
+            if os.path.dirname(script) == "":
                 dst_file = os.path.join(path, "scripts", os.path.basename(script))
             else:
-                pth = os.path.join(path, 'scripts', os.path.dirname(script))
+                pth = os.path.join(path, "scripts", os.path.dirname(script))
                 if not os.path.exists(pth):
                     os.makedirs(pth)
-                dst_file = os.path.join(path, 'scripts', script)
+                dst_file = os.path.join(path, "scripts", script)
             shutil.copyfile(script, dst_file)
 
 

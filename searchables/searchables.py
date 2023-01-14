@@ -1,40 +1,6 @@
 import random
 
 
-def EfficientNetB0Conf(d):
-    num_blocks = 7
-    strides = [1, 2, 2, 2, 1, 2, 1]
-    ich = [32, 16, 24, 40, 80, 112, 192]
-    och = [16, 24, 40, 80, 112, 192, 320]
-    # kchoices = [3, 3, 5, 3, 5, 5, 3]
-    kchoices = [3, 3, 5, 3, 5, 5, 3]
-    echoices = [1, 6, 6, 6, 6, 6, 6]
-    # blocktypes = ['MB', 'FMB']
-    if d == 1:
-        lchoices = [1, 2, 2, 3, 3, 4, 1]
-    elif d == 0.5:
-        lchoices = [1, 1, 1, 2, 2, 2, 1]
-    else:
-        raise ValueError(f"Depth d={d} unsupported...")
-    # lchoices = [3, 3, 3, 3, 3, 3, 3]
-    layer_confs = []
-    bchoices = ["MB", "MB", "MB", "MB", "MB", "MB", "MB"]
-    # bchoices = random.choices(blocktypes, k=num_blocks)
-
-    for i in range(num_blocks):
-        conf = [
-            bchoices[i],
-            echoices[i],
-            kchoices[i],
-            strides[i],
-            ich[i],
-            och[i],
-            lchoices[i],
-        ]
-        layer_confs.append(conf)
-    return layer_confs
-
-
 def RandomSearchable():
     num_blocks = 7
     strides = [1, 2, 2, 2, 1, 2, 1]
@@ -64,6 +30,34 @@ def RandomSearchable():
         ]
         layer_confs.append(conf)
     return layer_confs
+
+
+def CustomSearchable(e, k, la, se):
+    num_blocks = 7
+    strides = [1, 2, 2, 2, 1, 2, 1]
+    ich = [32, 16, 24, 40, 80, 112, 192]
+    och = [16, 24, 40, 80, 112, 192, 320]
+    blocktypes = ["MB"]
+    layer_confs = []
+    bchoices = random.choices(blocktypes, k=num_blocks)
+    kchoices = k
+    echoices = e
+    lchoices = la
+    sechoices = se
+    for i in range(num_blocks):
+        conf = [
+            bchoices[i],
+            echoices[i],
+            kchoices[i],
+            strides[i],
+            ich[i],
+            och[i],
+            lchoices[i],
+            sechoices[i],
+        ]
+        layer_confs.append(conf)
+    return layer_confs
+
 
 
 def TestSearchable():

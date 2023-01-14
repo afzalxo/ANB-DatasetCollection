@@ -13,6 +13,7 @@ import configparser
 import torch.utils
 import torch.distributed as dist
 import torch.backends.cudnn as cudnn
+from torch.cuda.amp import autocast
 import random
 import warnings
 from thop import profile
@@ -23,6 +24,7 @@ from trainval.trainval import dry_run
 from dataloader.ffcv_dataloader import get_ffcv_loaders
 from auxiliary.utils import CrossEntropyLabelSmooth
 from auxiliary.utils import create_optimizer
+from auxiliary.utils import config_json_to_list_repr
 from models.accelbenchnet import AccelNet as Network
 from searchables import searchables
 
@@ -75,7 +77,8 @@ def profile_memory(design, platform, mode, rank):
         after_model = torch.cuda.max_memory_allocated()
         input_mem = torch.randn((512, 3, 192, 192), dtype=torch.float32).to(f'cuda:{rank}')
         target = torch.randn((512, 1000), dtype=torch.float32).to(f'cuda:{rank}')
-        output = model_temp(input_mem)
+        with autocast():
+            output = model_temp(input_mem.contiguous(memory_format=torch.channels_last))
         after_forward = torch.cuda.max_memory_allocated()
         loss = criterion(output, target)
         loss.backward()
@@ -93,12 +96,12 @@ def profile_memory(design, platform, mode, rank):
 
 def profile_model(input_size, design, platform, mode, local_rank):
     model_temp = Network(design=design, platform=platform, mode=mode)
-    input = torch.randn(input_size)#.to(f'cuda:{local_rank}')
+    input = torch.randn(input_size)  # .to(f'cuda:{local_rank}')
     macs, params = profile(model_temp, inputs=(input,))
     macs, params = macs / 1000000, params / 1000000
     del model_temp
-    #print(f"MFLOPS: {macs}, MPARAMS: {params}")
-    logging.info('MFLOPS %f, MPARAMS: %f', macs, params)
+    # print(f"MFLOPS: {macs}, MPARAMS: {params}")
+    logging.info("MFLOPS %f, MPARAMS: %f", macs, params)
     torch.cuda.empty_cache()
     gc.collect()
     return macs, params
@@ -115,6 +118,10 @@ def main():
 
     parser = argparse.ArgumentParser("")
     parser.add_argument("--cfg_path")
+    parser.add_argument("--architecture_json", type=str, help="Architecture json file")
+    parser.add_argument("--search_algo", type=str, help="Search algorithm used")
+    parser.add_argument("--arch_epoch", type=int, help="Architecture search epoch")
+    parser.add_argument("--episode", type=int, help="Search episode within epoch")
     args = parser.parse_args()
 
     cfg_path = args.cfg_path
@@ -169,11 +176,13 @@ def main():
         job_id = int(os.environ["SLURM_JOB_ID"])
         ip = subprocess.getoutput(f"scontrol show hostname {iplist} | head -n1")
         setup_for_distributed(global_rank == 0)
+        cwd = os.getcwd()
+        args.save = '/'.join(cwd.split('/')[:-2]) + '/USERDIR/'
     elif args.distributed and args.cluster == "local":
         local_rank = int(os.environ["LOCAL_RANK"])
         global_rank = int(os.environ["LOCAL_RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
-        job_id = 10001# int(os.getpid())
+        job_id = 10001  # int(os.getpid())
         ip = "127.0.0.1"
         setup_for_distributed(global_rank == 0)
     else:
@@ -189,11 +198,7 @@ def main():
     args.ip = ip
     args.job_id = job_id
 
-    args.use_wandb = True if global_rank == 0 else False
-
-    args.save = "{}exp-{}-{}-{}".format(
-        args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M%S")
-    )
+    args.use_wandb = True if global_rank == 0 and args.use_wandb else False
     print(
         f"Global Rank {global_rank}, Local Rank {local_rank},\
         World Size {world_size}, Job ID {args.job_id}"
@@ -209,6 +214,15 @@ def main():
             global_rank, local_rank, ip, args.port, world_size, args.cluster
         )
         dist.barrier()
+    args.save = "{}search{}-archep{}-epi{}-{}-{}-{}".format(
+        args.save,
+        args.search_algo,
+        args.arch_epoch,
+        args.episode,
+        args.job_id,
+        args.note,
+        time.strftime("%Y%m%d-%H"),
+    )
     torch.set_printoptions(precision=4)
     np.set_printoptions(precision=4)
     if global_rank == 0:
@@ -242,15 +256,16 @@ def main():
         wandb_con = wandb.init(
             project="NASBenchFPGA",
             entity="europa1610",
-            name=args.note + f"_{args.job_id}",
+            name=args.search_algo + '-' + str(args.arch_epoch) + '-' + str(args.episode),
             settings=wandb.Settings(code_dir="."),
             dir=wandb_metadata_dir,
+            group=f"search-{args.search_algo}",
         )
-        wandb_art = wandb.Artifact(name=f"train-code-jobid{job_id}", type="code")
-        wandb_art.add_dir(os.path.join(args.save, "scripts"))
-        wandb_con.log_artifact(wandb_art)
+        # wandb_art = wandb.Artifact(name=f"train-code-jobid{job_id}", type="code")
+        # wandb_art.add_dir(os.path.join(args.save, "scripts"))
+        # wandb_con.log_artifact(wandb_art)
         wandb_con.config.update(args)
-        logging.info('Saving py files to wandb...')
+        logging.info("Saving py files to wandb...")
         wandb_con.save("./*.py")
         wandb_con.save("./trainval/*.py")
         wandb_con.save("./dataloader/*.py")
@@ -258,7 +273,7 @@ def main():
         wandb_con.save("./models/*.py")
         wandb_con.save("./models/ops/*.py")
         wandb_con.save("./searchables/*.py")
-        logging.info('Saved py files to wandb...')
+        logging.info("Saved py files to wandb...")
         args.wandb_con = wandb_con
     else:
         wandb_con = None
@@ -272,88 +287,94 @@ def main():
     # FFCV loader here
     args.in_memory = True
     train_success = True
-    m = 0
-    models_to_eval = 300
 
     train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
     criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
         f"cuda:{local_rank}"
     )
-    while m < models_to_eval:
-        args.model_num = m
-        if args.distributed:
-            dist.barrier()
-        args.design = (
-            searchables.RandomSearchable()
-        )  # EfficientNetB0Conf(d=1)#.RandomSearchable()
-        logging.info(
-            "Job ID: %d, Model Number: %d, Design: \n%s",
-            args.job_id,
-            args.model_num,
-            np.array(args.design),
+    args.model_num = 0
+    if args.distributed:
+        dist.barrier()
+    design_list = utils.config_json_to_list_repr(args.architecture_json)
+    args.design = searchables.CustomSearchable(
+        e=design_list[0], k=design_list[1], la=design_list[2], se=design_list[3]
+    )
+    logging.info(
+        "Job ID: %d, Model Number: %d, Design: \n%s",
+        args.job_id,
+        args.model_num,
+        np.array(args.design),
+    )
+    platform, mode = "fpga", "train"
+    args.macs, args.params = None, None
+    if args.global_rank == 0:
+        args.macs, args.params = profile_model(
+            (1, 3, 224, 224),
+            design=args.design,
+            platform=platform,
+            mode=mode,
+            local_rank=args.local_rank,
         )
-        platform, mode = "fpga", "train"
-        args.macs, args.params = None, None
+    rank_trainables = [False] * args.world_size
+    mem, trainable = profile_memory(args.design, platform, mode, args.local_rank)
+    rank_trainables[args.global_rank] = trainable
+    rank_trainables = torch.Tensor([rank_trainables])
+    torch.distributed.all_reduce(rank_trainables, op=torch.distributed.ReduceOp.SUM)
+    if not rank_trainables.all():
+        trainable = False
+    else:
+        trainable = True
+    if args.global_rank == 0:
+        wandb_art = wandb.Artifact(name=f'trainability-search-try122-{args.search_algo}-{args.arch_epoch}-{args.episode}', type='custom', metadata={'trainable': trainable})
+        args.wandb_con.log_artifact(wandb_art)
+    if args.distributed:
+        dist.barrier()
+    if not trainable:
+        logging.info(
+            "Rank: %d, Design not trainable due to GPU mem overflows...\nMoving to next design...", args.local_rank
+        )
         if args.global_rank == 0:
-            args.macs, args.params = profile_model(
-                (1, 3, 224, 224),
-                design=args.design,
-                platform=platform,
-                mode=mode,
-                local_rank=args.local_rank,
-            )
-        rank_trainables = [False] * args.world_size
-        mem, trainable = profile_memory(args.design, platform, mode, args.local_rank)
-        rank_trainables[args.global_rank] = trainable
-        rank_trainables = torch.Tensor([rank_trainables])
-        torch.distributed.all_reduce(rank_trainables, op=torch.distributed.ReduceOp.SUM)
-        if not rank_trainables.all():
-            trainable = False
-        if not trainable:
-            logging.info(
-                "Design not trainable due to GPU mem overflows...\nMoving to next design..."
-            )
-            continue
-        if args.distributed:
-            dist.barrier()
-        model = Network(design=args.design, platform=platform, mode=mode)
-        model = model.to(memory_format=torch.channels_last)
-        model = model.to(f"cuda:{local_rank}")
+            args.wandb_con.finish()
+        dist.barrier()
+        exit(1)
+    if args.distributed:
+        dist.barrier()
+    model = Network(design=args.design, platform=platform, mode=mode)
+    model = model.to(memory_format=torch.channels_last)
+    model = model.to(f"cuda:{local_rank}")
 
-        if args.distributed:
-            dist.barrier()
-            model = torch.nn.parallel.DistributedDataParallel(model)
-            dist.barrier()
-        optimizer, scheduler = create_optimizer(model, args.lr, args.weight_decay, args)
-        train_acc, train_loss, valid_t1, _, valid_loss, train_success = train_x_epochs(
-            args.epochs,
-            scheduler,
-            dl,
-            train_queue,
-            valid_queue,
-            model,
-            criterion,
-            optimizer,
-            args.global_rank,
-            args.local_rank,
-            args.world_size,
-            wandb_con,
-            args,
-        )
-        logging.info(
-            "Job ID: %d, Model Number: %d, Train Success: %s, Model Acc: %f",
-            args.job_id,
-            args.model_num,
-            str(train_success),
-            valid_t1,
-        )
-        if args.distributed:
-            dist.barrier()
-        del model, optimizer, scheduler
-        torch.cuda.empty_cache()
-        gc.collect()
-        if train_success:
-            m += 1
+    if args.distributed:
+        dist.barrier()
+        model = torch.nn.parallel.DistributedDataParallel(model)
+        dist.barrier()
+    optimizer, scheduler = create_optimizer(model, args.lr, args.weight_decay, args)
+    train_acc, train_loss, valid_t1, _, valid_loss, train_success = train_x_epochs(
+        args.epochs,
+        scheduler,
+        dl,
+        train_queue,
+        valid_queue,
+        model,
+        criterion,
+        optimizer,
+        args.global_rank,
+        args.local_rank,
+        args.world_size,
+        wandb_con,
+        args,
+    )
+    logging.info(
+        "Job ID: %d, Model Number: %d, Train Success: %s, Model Acc: %f",
+        args.job_id,
+        args.model_num,
+        str(train_success),
+        valid_t1,
+    )
+    if args.distributed:
+        dist.barrier()
+    del model, optimizer, scheduler
+    torch.cuda.empty_cache()
+    gc.collect()
 
 
 if __name__ == "__main__":

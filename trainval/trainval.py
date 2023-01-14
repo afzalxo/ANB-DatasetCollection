@@ -345,7 +345,8 @@ def train_x_epochs(
             import wandb
 
             wandb_art = wandb.Artifact(
-                name=f"models-random-jobid{args.job_id}-model{args.model_num}",
+                # name=f"models-random-jobid{args.job_id}-model{args.model_num}",
+                name=f"models-search-try122-{args.search_algo}-{args.arch_epoch}-{args.episode}",
                 type="model",
                 metadata={
                     "training_config": training_config_dict,

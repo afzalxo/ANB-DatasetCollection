@@ -161,10 +161,13 @@ def map_fn(index, args):
                10382, 10383, 10384, 10386, 10387, 10402, 10403, 10404, 10406, 10407,
                10432, 10433, 10435, 10436, 10457, 10458, 10459, 10461, 10463, 10465,
                10466, 10467, 10468]
+    job_ids = [10474, 10475, 10476, 10477, 10478, 10479, 10000, 10481, 10001, 10523, 10522, 10525]
 
     table_rows = []
 
     train_queue, valid_queue = build_torchvision_loader_tpu(args)
+    train_queue = pl.MpDeviceLoader(train_queue, device)
+    valid_queue = pl.MpDeviceLoader(valid_queue, device)
     args.writer = None
     platform, mode = "fpga", "train"
     if xm.is_master_ordinal():
@@ -183,6 +186,11 @@ def map_fn(index, args):
                     )
                     md = artifact.metadata["model_metadata"]
                     args.design = md["architecture"]
+                    blocks = np.array(args.design)[:, 0]
+                    print(f'Job ID: {jid}, Version {version}')
+                    if 'FMB' in blocks:
+                        version += 1
+                        continue
                     if len(args.design[0]) == 7:
                         for p in range(7):
                             args.design[p].append(False)
@@ -195,16 +203,6 @@ def map_fn(index, args):
                         md['params'],
                         np.array(args.design),
                     )
-                    """
-                    args.macs, args.params = None, None
-                    if args.global_rank == 0:
-                        args.macs, args.params = profile_model(
-                            (1, 3, 224, 224),
-                            design=args.design,
-                            platform=platform,
-                            mode=mode,
-                        )
-                    """
                     model = Network(design=args.design, platform=platform, mode=mode)
                     # model = model.to(memory_format=torch.channels_last)
                     model = model.to(device)
@@ -218,7 +216,7 @@ def map_fn(index, args):
                         float(md["best_acc_top5"]),
                         float(md["macs"]),
                         float(md["params"]),
-                        -1 * float(md["train_time"]),
+                        abs(float(md["train_time"])),
                         mean_thr,
                         std_thr,
                     ]
@@ -228,6 +226,7 @@ def map_fn(index, args):
                     version += 1
                     m += 1
                     missing_counter = 0
+                    del model
                 except KeyboardInterrupt:
                     print('Abort...')
                     args.wandb_con.finish()

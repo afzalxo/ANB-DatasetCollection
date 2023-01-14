@@ -13,18 +13,19 @@ import auxiliary.utils as utils
 
 from models.accelbenchnet import AccelNet as Network
 import torch_xla.distributed.parallel_loader as pl
+import torch_xla.test.test_utils as test_utils
 
 
 def _train_update(device, step, loss, tracker, epoch, writer):
-    import torch_xla.test.test_utils as test_utils
     test_utils.print_training_update(
-      device,
-      step,
-      loss.item(),
-      tracker.rate(),
-      tracker.global_rate(),
-      epoch,
-      summary_writer=writer)
+        device,
+        step,
+        loss.item(),
+        tracker.rate(),
+        tracker.global_rate(),
+        epoch,
+        summary_writer=writer,
+    )
 
 
 def train_epoch_tpu(
@@ -39,7 +40,7 @@ def train_epoch_tpu(
     lr_peak_epoch,
     epochs,
     argslr,
-    args
+    args,
 ):
     tracker = xm.RateTracker()
     objs = utils.AvgrageMeter()
@@ -59,7 +60,7 @@ def train_epoch_tpu(
             param_group["lr"] = lrs[step]
 
         optimizer.zero_grad(set_to_none=True)
-        logits = model(input) #input.contiguous(memory_format=torch.channels_last))
+        logits = model(input)  # input.contiguous(memory_format=torch.channels_last))
         loss = criterion(logits, target)
         loss.backward()
         xm.optimizer_step(optimizer)
@@ -72,8 +73,11 @@ def train_epoch_tpu(
         top5.update(prec5, n)
         if step % report_freq == 0:
             # end_time = time.time()
-            xm.add_step_closure(_train_update, args=(args.local_rank, step, loss, tracker, epoch, args.writer))
-            '''
+            xm.add_step_closure(
+                _train_update,
+                args=(args.local_rank, step, loss, tracker, epoch, args.writer),
+            )
+            """
             if step == 0:
                 duration = 0
                 start_time = time.time()
@@ -90,7 +94,7 @@ def train_epoch_tpu(
                 duration,
                 batch_time.avg,
             )
-            '''
+            """
         del loss, logits, target
     return top1.avg.data.item(), objs.avg.data.item()
 
@@ -103,7 +107,6 @@ def infer_tpu(
     top1 = utils.AvgrageMeter()
     top5 = utils.AvgrageMeter()
     model.eval()
-    import torch_xla.test.test_utils as test_utils
 
     for step, (input, target) in enumerate(valid_queue):
         logits = model(input)
@@ -117,8 +120,10 @@ def infer_tpu(
 
         if step % report_freq == 0:
             end_time = time.time()
-            xm.add_step_closure(test_utils.print_test_update, args=(args.local_rank, None, epoch, step))
-            '''
+            xm.add_step_closure(
+                test_utils.print_test_update, args=(args.local_rank, None, epoch, step)
+            )
+            """
             if step == 0:
                 duration = 0
                 start_time = time.time()
@@ -133,96 +138,44 @@ def infer_tpu(
                 top5.avg,
                 duration,
             )
-            '''
+            """
         del loss, logits, target
     avg_top1_val, avg_top5_val, avg_loss = top1.avg, top5.avg, objs.avg
     return avg_top1_val, avg_top5_val, avg_loss
 
 
-import torch_xla.test.test_utils as test_utils
 def throughput_tpu(
     valid_queue, model, args, epoch, report_freq=100, lr_tta=True, fast=False
 ):
-    objs = utils.AvgrageMeter()
-    top1 = utils.AvgrageMeter()
-    top5 = utils.AvgrageMeter()
     model.eval()
-    repititions = 1
-    total_time = 0
-    warmup_reps = 0
-    device = xm.xla_device()
-    valid_queue = pl.MpDeviceLoader(valid_queue, device)
-    start_time = time.time()
-    rep_time = []
+    # device = xm.xla_device()
     rates = []
-    cur_rate = [torch.zeros(1, device=device)]
     last_rate = 0
     tracker = xm.RateTracker()
-    '''
-    with torch.no_grad():
-        for rep in range(2500000):
-            dummy_input = torch.randn((args.val_batch_size, 3,224,224), device=device)#.to(device)
-            logits = model(dummy_input)
-            tracker.add(args.val_batch_size)
-            if rep % report_freq == 0:
-                # end_time = time.time()
-                #xm.add_step_closure(test_utils.print_test_update, args=(args.local_rank, None, epoch, step))
-                xm.mark_step()
-                xm.wait_device_ops()
-                cur_rate = tracker.rate()
-                print(f'Rank: xla:{xm.get_ordinal()}, step: {rep}, Rates: {cur_rate}, {tracker.global_rate()}, Change: {cur_rate-last_rate}')
-                last_rate = cur_rate
-    '''
-    last_thro = 0
-    repititions = 1 
     report_freq = 50
-    for rep in range(repititions):
-        rep_start = time.time()
-        for step, (input, target) in enumerate(itertools.chain(valid_queue)):
-            #if rep >= warmup_reps:
-            # st = time.time()
-            logits = model(input)
-            # xm.mark_step()
-            # xm.wait_device_ops()
-            # if rep >= warmup_reps:
-            # total_time += time.time() - st
-            xm.mark_step()
+    for step, (input, _) in enumerate(valid_queue):
+        _ = model(input)
+        xm.mark_step()
+        tracker.add(args.val_batch_size)
+        if ((step + 1) % report_freq) == 0:
+            # xm.add_step_closure(test_utils.print_test_update, args=(args.local_rank, None, epoch, step))
+            # old_rate = cur_rate
+            # cur_rate = [torch.tensor(tracker.rate(), device=device)]
+            # xm.all_reduce(xm.REDUCE_SUM, cur_rate)
+            # print(f'Rates: {tracker.rate()}, {tracker.global_rate()}, Sum: {cur_rate}, Change: {cur_rate[0]-old_rate[0]}')
             xm.wait_device_ops()
-            tracker.add(args.val_batch_size)
-            if ((step + 1) % report_freq) == 0:
-                # end_time = time.time()
-                #xm.add_step_closure(test_utils.print_test_update, args=(args.local_rank, None, epoch, step))
-                # old_rate = cur_rate
-                # cur_rate = [torch.tensor(tracker.rate(), device=device)]
-                # xm.all_reduce(xm.REDUCE_SUM, cur_rate)
-                # print(f'Rates: {tracker.rate()}, {tracker.global_rate()}, Sum: {cur_rate}, Change: {cur_rate[0]-old_rate[0]}')
-                
-                cur_rate = tracker.rate()
-                print(f'Rank: {args.local_rank}, step: {step}, Current Rate: {cur_rate}, Global Rate: {tracker.global_rate()}, Rate Change: {cur_rate-last_rate}')
-                last_rate = cur_rate
-                if step+1 >= 300:
-                    rates.append(last_rate)
-                if step+1 == 400:
-                    break
-
-        rep_time.append(time.time() - rep_start)
-        # print(rep_time)
-        # print(rates)
-    # total_time = sum(rep_time[warmup_reps:])
+            cur_rate = tracker.rate()
+            print(
+                f"Rank: {args.local_rank}, step: {step}, Current Rate: {cur_rate}, Global Rate: {tracker.global_rate()}, Rate Change: {cur_rate-last_rate}"
+            )
+            last_rate = cur_rate
+            if step + 1 >= 300:
+                rates.append(last_rate)
     mean_thr = np.mean(rates)
     std_thr = np.std(rates)
-    print(f'Mean: {mean_thr}, Std: {std_thr}')
+    print(f"Mean: {mean_thr}, Std: {std_thr}")
+    del model, valid_queue
 
-    # throughput = [torch.tensor(mean_thr, device=device)]
-    # total_time = 0.1
-    # throughput = [torch.tensor(((repititions - warmup_reps) * args.val_batch_size * len(valid_queue))/total_time, device=device)]
-    # print(f'Throughput: {throughput}')
-    # xm.all_reduce(xm.REDUCE_SUM, throughput)
-    # print(f'Summed Throughput: {throughput}')
-    # _std = torch.std(throughput[])
-    # print(f'Summed Std: {_std}')
-
-    # avg_top1_val, avg_top5_val, avg_loss = top1.avg, top5.avg, objs.avg
     return mean_thr, std_thr
 
 
@@ -276,16 +229,15 @@ def train_x_epochs_tpu(
         # logging.info('Train_acc %f', train_acc)
         epoch_duration = time.time() - epoch_start
         logging.info(
-            "Epoch %d, Train_acc %f, Epoch time: %ds",
-            epoch, train_acc, epoch_duration
+            "Epoch %d, Train_acc %f, Epoch time: %ds", epoch, train_acc, epoch_duration
         )
         if global_rank == 0:
             if wandb_con is not None:
-                #commit = True if epoch <= _epochs - 4 else False
+                # commit = True if epoch <= _epochs - 4 else False
                 commit = False
                 wandb_con.log({"t_acc": train_acc, "t_loss": train_obj}, commit=commit)
         # validation
-        if epoch > -1:#_epochs - 4:
+        if epoch > -1:  # _epochs - 4:
             valid_acc_top1, valid_acc_top5, valid_obj = infer_tpu(
                 valid_queue,
                 model,
@@ -300,7 +252,7 @@ def train_x_epochs_tpu(
             avg_top1_val, avg_top5_val = valid_acc_top1, valid_acc_top5
 
             if global_rank == 0 and wandb_con is not None:
-                #commit = True if epoch < _epochs - 1 else False
+                # commit = True if epoch < _epochs - 1 else False
                 commit = True
                 wandb_con.log(
                     {
@@ -324,7 +276,11 @@ def train_x_epochs_tpu(
             logging.info(
                 "Epoch %d, Valid_acc_top1 %f,\
                 Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f",
-                epoch, avg_top1_val, avg_top5_val, best_acc_top1, best_acc_top5
+                epoch,
+                avg_top1_val,
+                avg_top5_val,
+                best_acc_top1,
+                best_acc_top5,
             )
     train_endtime = time.time()
     if global_rank == 0:
@@ -463,7 +419,8 @@ def infer_tv(
 def dry_run(design, platform, mode, criterion, args):
     from dataloader.ffcv_dataloader import get_ffcv_loaders
     from torch.cuda.amp import GradScaler
-    logging.info('Performing dry run on design with peak resolution...')
+
+    logging.info("Performing dry run on design with peak resolution...")
     scaler = GradScaler()
     train_queue, valid_queue, dl = get_ffcv_loaders(args.local_rank, args)
     dl.decoder.output_size = (args.max_res, args.max_res)
@@ -495,7 +452,7 @@ def dry_run(design, platform, mode, criterion, args):
     )
     del train_queue, valid_queue, dl, model, optimizer, scheduler
     if success:
-        logging.info('Design trainable...')
+        logging.info("Design trainable...")
     torch.cuda.empty_cache()
     gc.collect()
     return success
