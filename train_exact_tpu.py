@@ -26,18 +26,17 @@ import torch_xla.utils.utils as xu
 
 
 import auxiliary.utils as utils
-from trainval.trainval_tpu import train_x_epochs_tpu
+from trainval.trainval_tpu_new import train_x_epochs_tpu
 from dataloader.torchvision_dataloader import build_torchvision_loader_tpu_improved as build_torchvision_loader_tpu
 from auxiliary.utils import CrossEntropyLabelSmooth
-from auxiliary.utils import create_optimizer
+from auxiliary.utils import create_optimizer_tpu
 from models.accelbenchnet import AccelNet as Network
 from searchables import searchables
 
+from timm.data.mixup import Mixup
+from timm.loss import SoftTargetCrossEntropy
+
 warnings.filterwarnings("ignore")
-
-
-def cleanup_distributed():
-    dist.destroy_process_group()
 
 
 def setup_for_distributed(is_master):
@@ -74,7 +73,7 @@ def map_fn(index, args):
 
     args.use_wandb = True if global_rank == 0 and args.use_wandb else False
 
-    args.save = "{}exp-{}-{}-{}".format(
+    args.save = "{}tpuv3Train-{}-{}-{}".format(
         args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M%S")
     )
     print(
@@ -120,14 +119,16 @@ def map_fn(index, args):
             name=args.note + f"_{args.job_id}",
             settings=wandb.Settings(code_dir="."),
             dir=wandb_metadata_dir,
+            group='deployment_models_tpu',
         )
-        wandb_art = wandb.Artifact(name=f"train-code-jobid{args.job_id}", type="code")
+        wandb_art = wandb.Artifact(name=f"train-code-deploytpuv3-jobid{args.job_id}", type="code")
         wandb_art.add_dir(os.path.join(args.save, "scripts"))
         wandb_con.log_artifact(wandb_art)
         wandb_con.config.update(args)
         logging.info('Saving py files to wandb...')
         wandb_con.save("./*.py")
         wandb_con.save("./trainval/*.py")
+        wandb_con.save('./configs/*.cfg')
         wandb_con.save("./dataloader/*.py")
         wandb_con.save("./auxiliary/*.py")
         wandb_con.save("./models/*.py")
@@ -145,22 +146,29 @@ def map_fn(index, args):
     args.in_memory = True
     train_success = True
     m = 0
-    models_to_eval = 10
+    models_to_eval = 1
     device = xm.xla_device()
 
-    train_queue, valid_queue = build_torchvision_loader_tpu(args)
-    criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(device)
+    train_queue, valid_queue, len_tdset = build_torchvision_loader_tpu(args)
+    # criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(device)
+    criterion = SoftTargetCrossEntropy().to(device)
     total_batch_size = args.train_batch_size * args.update_freq * args.world_size
-    args.train_steps_per_epoch = len(train_queue) // total_batch_size
+    args.train_steps_per_epoch = len_tdset // total_batch_size
     args.writer = None
     if xm.is_master_ordinal():
         import torch_xla.test.test_utils as test_utils
         args.writer = test_utils.get_summary_writer(args.save)
+
+    mixup_fn = None
+    if args.use_mixup:
+        mixup_fn = Mixup(mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax, 
+                prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
+                label_smoothing=args.label_smoothing, num_classes=args.CLASSES)
     while m < models_to_eval:
         args.model_num = m
         args.design = (
-            searchables.RandomSearchable()
-        )  # EfficientNetB0Conf(d=1)#.RandomSearchable()
+            searchables.EffNetB0Conf()
+        )
         logging.info(
             "Job ID: %d, Model Number: %d, Design: \n%s",
             args.job_id,
@@ -196,15 +204,17 @@ def map_fn(index, args):
 
         # if args.distributed:
         #    model = torch.nn.parallel.DistributedDataParallel(model)
-        optimizer, scheduler, _ = create_optimizer(model, args.lr, args.weight_decay, args)
+        optimizer, lr_scheduler, wd_scheduler = create_optimizer_tpu(model, args.lr, args.weight_decay, args)
         train_acc, train_loss, valid_t1, _, valid_loss, train_success = train_x_epochs_tpu(
             args.epochs,
-            scheduler,
+            lr_scheduler,
+            wd_scheduler,
             train_queue,
             valid_queue,
             model,
             criterion,
             optimizer,
+            mixup_fn,
             args.global_rank,
             args.local_rank,
             args.world_size,
@@ -251,24 +261,18 @@ def main():
     args.design = config["model"]["design"]
     # dataloaders
     args.train_dataset = config["dataloader"]["train_dataset"]
-    args.val_dataset = config["dataloader"]["val_dataset"]
     args.num_workers = config["dataloader"].getint("num_workers")
     args.in_memory = config["dataloader"].getboolean("in_memory")
     # trainval
     args.epochs = config["trainval"].getint("epochs")
     args.train_batch_size = config["trainval"].getint("train_batch_size")
     args.val_batch_size = config["trainval"].getint("val_batch_size")
-    args.val_resolution = config["trainval"].getint("val_resolution")
-    args.lr_tta = config["trainval"].getboolean("lr_tta")
-    args.min_res = config["trainval"].getint("min_res")
-    args.max_res = config["trainval"].getint("max_res")
-    args.start_ramp = config["trainval"].getint("start_ramp")
-    args.end_ramp = config["trainval"].getint("end_ramp")
     args.seed = config["trainval"].getint("seed")
     # optimizer
     args.lr = config["optimizer"].getfloat("lr")
     args.weight_decay = config["optimizer"].getfloat("weight_decay")
-    args.lr_peak_epoch = config["optimizer"].getint("lr_peak_epoch")
+    args.min_lr = config["optimizer"].getfloat("min_lr")
+    args.warmup_epochs = config["optimizer"].getint("warmup_epochs")
     # distributed
     args.distributed = config["distributed"].getboolean("distributed")
     args.cluster = config["distributed"]["cluster"]
@@ -278,34 +282,23 @@ def main():
     args.IMAGENET_MEAN = IMAGENET_MEAN
     args.IMAGENET_STD = IMAGENET_STD
     args.DEFAULT_CROP_RATIO = DEFAULT_CROP_RATIO
+    args.opt_eps = 1e-8 
 
-    if args.distributed and args.cluster == "tacc":
-        global_rank = int(os.environ["SLURM_PROCID"])
-        local_rank = int(os.environ["SLURM_LOCALID"])
-        world_size = int(os.environ["SLURM_NTASKS"])
-        iplist = os.environ["SLURM_JOB_NODELIST"]
-        job_id = int(os.environ["SLURM_JOB_ID"])
-        ip = subprocess.getoutput(f"scontrol show hostname {iplist} | head -n1")
-        setup_for_distributed(global_rank == 0)
-    elif args.distributed and args.cluster == "local":
-        local_rank = int(os.environ["LOCAL_RANK"])
-        global_rank = int(os.environ["LOCAL_RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
-        job_id = 10001# int(os.getpid())
-        ip = "127.0.0.1"
-        setup_for_distributed(global_rank == 0)
-    elif args.distributed and args.cluster == "tpu":
-        os.environ['XLA_USE_BF16'] = '1' # Enable bfloat16
-        job_id = 20000
-        ip = "127.0.0.1"
-    else:
-        global_rank = 0
-        job_id = 0
-        ip = "localhost"
+    args.use_mixup = True
+    args.mixup = 0.8
+    args.mixup_mode = 'batch'
+    args.mixup_prob = 1
+    args.mixup_switch_prob = 0.5
+    args.cutmix = 1
+    args.cutmix_minmax = None
+
+    os.environ['XLA_USE_BF16'] = '1' # Enable bfloat16
+    job_id = os.getpid()
+    ip = "127.0.0.1"
 
     args.ip = ip
     args.job_id = job_id
-
+    args.update_freq = 4
     flags = args
     xmp.spawn(map_fn, args=(flags,), nprocs=8, start_method='fork')
     print('Finished...')

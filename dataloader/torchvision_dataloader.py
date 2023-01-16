@@ -124,6 +124,7 @@ def build_torchvision_loader_tpu_improved(args):
     root = os.path.join(args.train_dataset, "val")
     test_dataset = datasets.ImageFolder(root, transform=val_transforms)
     train_sampler, test_sampler = None, None
+    len_tdset = len(train_dataset)
     if xm.xrt_world_size() > 1:
         train_sampler = torch.utils.data.distributed.DistributedSampler(
             train_dataset,
@@ -152,4 +153,4 @@ def build_torchvision_loader_tpu_improved(args):
         num_workers=args.num_workers,
     )
 
-    return train_loader, test_loader
+    return train_loader, test_loader, len_tdset
