@@ -105,7 +105,7 @@ class MBConv(nn.Module):
         stochastic_depth_prob: float,
         norm_layer: Callable[..., nn.Module],
         activation_layer: Callable[..., nn.Module],
-        platform: str = 'gpu',
+        se_sigmoid: Callable[..., nn.Module],
         mode: str = 'train',
     ) -> None:
         super().__init__()
@@ -148,7 +148,7 @@ class MBConv(nn.Module):
         # squeeze and excitation (only if to be deployed on GPU)
         if cnf.se_operation:
             squeeze_channels = max(1, cnf.input_channels // 4)
-            layers.append(SqueezeExcitation(expanded_channels, squeeze_channels, activation=partial(activation_layer, inplace=True)))
+            layers.append(SqueezeExcitation(expanded_channels, squeeze_channels, activation=partial(activation_layer, inplace=True), scale_activation=se_sigmoid))
 
         # project
         layers.append(
@@ -184,7 +184,6 @@ class FusedMBConv(nn.Module):
         stochastic_depth_prob: float,
         norm_layer: Callable[..., nn.Module],
         activation_layer: Callable[..., nn.Module],
-        platform: str = 'gpu',
         mode: str = 'train',
     ) -> None:
         super().__init__()
@@ -257,7 +256,7 @@ class AccelNASBenchNet(nn.Module):
         dropout: float,
         stochastic_depth_prob: float = 0.2,
         num_classes: int = 1000,
-        platform: Optional[str] = "gpu",
+        activation_fn: Optional[str] = "silu",
         norm_layer: Optional[Callable[..., nn.Module]] = None,
         last_channel: Optional[int] = None,
         mode: str = "train",
@@ -265,7 +264,7 @@ class AccelNASBenchNet(nn.Module):
     ) -> None:
         super().__init__()
         self.mode = mode
-        self.platform = platform
+        self.activation_fn = activation_fn
         if not inverted_residual_setting:
             raise ValueError("The inverted_residual_setting should not be empty")
         elif not (
@@ -289,12 +288,14 @@ class AccelNASBenchNet(nn.Module):
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
 
-        if self.platform == "gpu":
+        if self.activation_fn == "silu":
             activation_layer = nn.SiLU
-        elif self.platform == "fpga":
+            se_sigmoid = nn.Sigmoid
+        elif self.activation_fn == "relu":
             activation_layer = nn.ReLU
+            se_sigmoid = nn.Hardsigmoid
         else:
-            raise ValueError(f"Platform {platform} not supported...")
+            raise ValueError(f"Activation {self.activation_fn} not supported...")
 
         layers: List[nn.Module] = []
 
@@ -332,7 +333,7 @@ class AccelNASBenchNet(nn.Module):
 
                 stage.append(
                     block_cnf.block(
-                        block_cnf, sd_prob, norm_layer, activation_layer, platform=self.platform, mode=self.mode
+                        block_cnf, sd_prob, norm_layer, activation_layer, se_sigmoid, mode=self.mode
                     )
                 )
                 stage_block_id += 1
@@ -391,7 +392,7 @@ def _accelnasbenchnet(
     inverted_residual_setting: Sequence[Union[MBConvConfig, FusedMBConvConfig]],
     dropout: float,
     last_channel: Optional[int],
-    platform: str,
+    activation_fn: str,
     progress: bool,
     mode: str,
     **kwargs: Any,
@@ -401,7 +402,7 @@ def _accelnasbenchnet(
         inverted_residual_setting,
         dropout,
         last_channel=last_channel,
-        platform=platform,
+        activation_fn=activation_fn,
         mode=mode,
         **kwargs,
     )
@@ -434,7 +435,7 @@ def gen_model_config(
 def AccelNet(
     *,
     design: list,
-    platform: str = "gpu",
+    activation_fn: str = "silu",
     mode: str = "train",
     progress: bool = True,
     **kwargs: Any,
@@ -445,7 +446,7 @@ def AccelNet(
         inverted_residual_setting,
         0.2,
         last_channel,
-        platform,
+        activation_fn,
         progress,
         mode=mode,
         **kwargs,

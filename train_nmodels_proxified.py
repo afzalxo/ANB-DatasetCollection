@@ -67,12 +67,12 @@ def setup_for_distributed(is_master):
     __builtin__.print = print
 
 
-def profile_memory(design, platform, mode, rank):
+def profile_memory(design, activation_fn, mode, rank):
     after_backward, before_model = 0, 0
     try:
         criterion = torch.nn.CrossEntropyLoss()
         before_model = torch.cuda.max_memory_allocated(device=torch.device(f'cuda:{rank}'))
-        model_temp = Network(design=design, platform=platform, mode=mode).to(f'cuda:{rank}')
+        model_temp = Network(design=design, activation_fn=activation_fn, mode=mode).to(f'cuda:{rank}')
         after_model = torch.cuda.max_memory_allocated(device=torch.device(f'cuda:{rank}'))
         input_mem = torch.randn((512, 3, 192, 192), dtype=torch.float32).to(f'cuda:{rank}')
         target = torch.randn((512, 1000), dtype=torch.float32).to(f'cuda:{rank}')
@@ -93,8 +93,8 @@ def profile_memory(design, platform, mode, rank):
     return (after_backward - before_model)/10**9, trainable
 
 
-def profile_model(input_size, design, platform, mode, local_rank):
-    model_temp = Network(design=design, platform=platform, mode=mode)
+def profile_model(input_size, design, activation_fn, mode, local_rank):
+    model_temp = Network(design=design, activation_fn=activation_fn, mode=mode)
     input = torch.randn(input_size)#.to(f'cuda:{local_rank}')
     macs, params = profile(model_temp, inputs=(input,))
     macs, params = macs / 1000000, params / 1000000
@@ -294,18 +294,18 @@ def main():
             args.model_num,
             np.array(args.design),
         )
-        platform, mode = "fpga", "train"
+        activation_fn, mode = "relu", "train"
         args.macs, args.params = None, None
         if args.global_rank == 0:
             args.macs, args.params = profile_model(
                 (1, 3, 224, 224),
                 design=args.design,
-                platform=platform,
+                activation_fn=activation_fn,
                 mode=mode,
                 local_rank=args.local_rank,
             )
         rank_trainables = [False] * args.world_size
-        mem, trainable = profile_memory(args.design, platform, mode, args.local_rank)
+        mem, trainable = profile_memory(args.design, activation_fn, mode, args.local_rank)
         if mem > 23.0:
             print(f'Memory required {mem} greater than 23.0 GiB threshold...')
             trainable = False
@@ -323,7 +323,7 @@ def main():
             continue
         if args.distributed:
             dist.barrier()
-        model = Network(design=args.design, platform=platform, mode=mode)
+        model = Network(design=args.design, activation_fn=activation_fn, mode=mode)
         model = model.to(memory_format=torch.channels_last)
         model = model.to(f"cuda:{local_rank}")
 
