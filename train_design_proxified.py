@@ -72,17 +72,17 @@ def profile_memory(design, platform, mode, rank):
     after_backward, before_model = 0, 0
     try:
         criterion = torch.nn.CrossEntropyLoss()
-        before_model = torch.cuda.max_memory_allocated()
+        before_model = torch.cuda.max_memory_allocated(device=torch.device(f'cuda:{rank}'))
         model_temp = Network(design=design, platform=platform, mode=mode).to(f'cuda:{rank}')
-        after_model = torch.cuda.max_memory_allocated()
+        after_model = torch.cuda.max_memory_allocated(device=torch.device(f'cuda:{rank}'))
         input_mem = torch.randn((512, 3, 192, 192), dtype=torch.float32).to(f'cuda:{rank}')
         target = torch.randn((512, 1000), dtype=torch.float32).to(f'cuda:{rank}')
         with autocast():
             output = model_temp(input_mem.contiguous(memory_format=torch.channels_last))
-        after_forward = torch.cuda.max_memory_allocated()
+        after_forward = torch.cuda.max_memory_allocated(device=torch.device(f'cuda:{rank}'))
         loss = criterion(output, target)
         loss.backward()
-        after_backward = torch.cuda.max_memory_allocated()
+        after_backward = torch.cuda.max_memory_allocated(device=torch.device(f'cuda:{rank}'))
         print(f'Forward Only: {(after_forward-after_model)/10**9}, Forward-Backward Total: {(after_backward-after_model)/10**9}, Including Model: {(after_backward-before_model)/10**9}')
         del model_temp, target, input_mem, output, loss
         torch.cuda.empty_cache()
@@ -91,7 +91,7 @@ def profile_memory(design, platform, mode, rank):
     except RuntimeError:
         print('Ran out of GPU memory... Untrainable...')
         trainable = False
-    return after_backward - before_model, trainable
+    return (after_backward - before_model)/10**9, trainable
 
 
 def profile_model(input_size, design, platform, mode, local_rank):
@@ -122,6 +122,7 @@ def main():
     parser.add_argument("--search_algo", type=str, help="Search algorithm used")
     parser.add_argument("--arch_epoch", type=int, help="Architecture search epoch")
     parser.add_argument("--episode", type=int, help="Search episode within epoch")
+    parser.add_argument("--version", type=int, help="Arch Epoch + Episode version")
     args = parser.parse_args()
 
     cfg_path = args.cfg_path
@@ -317,6 +318,9 @@ def main():
         )
     rank_trainables = [False] * args.world_size
     mem, trainable = profile_memory(args.design, platform, mode, args.local_rank)
+    if mem > 23.0:
+        print(f'Memory required {mem} greater than 23.0 GiB threshold...')
+        trainable = False
     rank_trainables[args.global_rank] = trainable
     rank_trainables = torch.Tensor([rank_trainables])
     torch.distributed.all_reduce(rank_trainables, op=torch.distributed.ReduceOp.SUM)
@@ -325,7 +329,7 @@ def main():
     else:
         trainable = True
     if args.global_rank == 0:
-        wandb_art = wandb.Artifact(name=f'trainability-search-try122-{args.search_algo}-{args.arch_epoch}-{args.episode}', type='custom', metadata={'trainable': trainable})
+        wandb_art = wandb.Artifact(name=f'trainability-search-try151-{args.search_algo}-{args.arch_epoch}-{args.episode}-{args.version}', type='custom', metadata={'trainable': trainable})
         args.wandb_con.log_artifact(wandb_art)
     if args.distributed:
         dist.barrier()
