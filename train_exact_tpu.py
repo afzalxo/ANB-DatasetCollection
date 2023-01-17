@@ -35,6 +35,10 @@ from searchables import searchables
 
 from timm.data.mixup import Mixup
 from timm.loss import SoftTargetCrossEntropy
+from timm.optim import create_optimizer_v2, optimizer_kwargs
+from timm.scheduler import create_scheduler_v2, scheduler_kwargs
+from timm.models import create_model
+
 
 warnings.filterwarnings("ignore")
 
@@ -204,11 +208,23 @@ def map_fn(index, args):
 
         # if args.distributed:
         #    model = torch.nn.parallel.DistributedDataParallel(model)
-        optimizer, lr_scheduler, wd_scheduler = create_optimizer_tpu(model, args.lr, args.weight_decay, args)
+        # optimizer, lr_scheduler, wd_scheduler = create_optimizer_tpu(model, args.lr, args.weight_decay, args)
+        args.opt = 'rmsproptf'
+        args.lr = 0.064
+        args.weight_decay = 1e-5
+        args.momentum = 0.9
+        args.opt_eps = 0.001
+        optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args), updates_per_epoch=len(train_queue))
+
+        args.epochs = 450
+        args.decay_epochs = 2.4
+        args.decay_rate = 0.97
+        args.sched = 'step'
+        lr_scheduler = create_scheduler_v2(optimizer, **scheduler_kwargs(args), updates_per_epoch=args.train)
+
         train_acc, train_loss, valid_t1, _, valid_loss, train_success = train_x_epochs_tpu(
             args.epochs,
             lr_scheduler,
-            wd_scheduler,
             train_queue,
             valid_queue,
             model,
@@ -298,7 +314,7 @@ def main():
 
     args.ip = ip
     args.job_id = job_id
-    args.update_freq = 4
+    args.update_freq = 1
     flags = args
     xmp.spawn(map_fn, args=(flags,), nprocs=8, start_method='fork')
     print('Finished...')

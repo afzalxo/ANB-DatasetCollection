@@ -12,6 +12,7 @@ import auxiliary.utils as utils
 
 from models.accelbenchnet import AccelNet as Network
 import torch_xla.distributed.parallel_loader as pl
+from timm.utils import reduce_tensor
 
 
 def _train_update(device, step, loss, tracker, epoch, writer):
@@ -29,12 +30,10 @@ def _train_update(device, step, loss, tracker, epoch, writer):
 def train_epoch_tpu(
     epoch,
     train_queue,
-    valid_queue,
     model,
     criterion,
     optimizer,
     lr_schedule,
-    wd_schedule,
     mixup_fn,
     report_freq,
     fast,
@@ -43,66 +42,60 @@ def train_epoch_tpu(
     args
 ):
     tracker = xm.RateTracker()
-    objs = utils.AvgrageMeter()
+    losses_m = utils.AvgrageMeter()
     top1 = utils.AvgrageMeter()
-    top5 = utils.AvgrageMeter()
     batch_time = utils.AvgrageMeter()
     model.train()
-    optimizer.zero_grad()
+    num_batches_per_epoch = len(train_queue)
+    last_idx = num_batches_per_epoch - 1
+    num_updates = epoch * num_batches_per_epoch
+
     iterator = train_queue
     for step, (input, target) in enumerate(iterator):
         b_start = time.time()
-        _step = step // args.update_freq
-        if _step >= args.train_steps_per_epoch:
-            continue
-        it = epoch*args.train_steps_per_epoch + _step
+        last_batch = step == last_idx
+
+        # _step = step // args.update_freq
+        # if _step >= args.train_steps_per_epoch:
+        #    continue
+        # it = epoch*args.train_steps_per_epoch + _step
+        '''
         if lr_schedule is not None or wd_schedule is not None and step % args.update_freq == 0:
             for i, param_group in enumerate(optimizer.param_groups):
                 if lr_schedule is not None:
                     param_group['lr'] = lr_schedule[it] * param_group['lr_scale']
                 if wd_schedule is not None and param_group['weight_decay'] > 0:
                     param_group['weight_decay'] = wd_schedule[it]
+        '''
 
         if mixup_fn is not None:
             input, target = mixup_fn(input, target)
 
         logits = model(input)
         loss = criterion(logits, target)
+        optimizer.zero_grad()
         loss /= args.update_freq
         loss.backward()
         if (step + 1) % args.update_freq == 0:
             xm.optimizer_step(optimizer)
-            optimizer.zero_grad(set_to_none=True)
+            # optimizer.zero_grad(set_to_none=True)
         tracker.add(args.train_batch_size)
         batch_time.update(time.time() - b_start)
+        num_updates += 1
         # prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
         # n = input.size(0)
         # objs.update(loss.data.item(), n)
         # top1.update(prec1.data.item(), n)
         # top5.update(prec5.data.item(), n)
-        if step % report_freq == 0:
+        if last_batch or step % report_freq == 0:
             # end_time = time.time()
             xm.add_step_closure(_train_update, args=(args.local_rank, step, loss, tracker, epoch, args.writer))
-            '''
-            if step == 0:
-                duration = 0
-                start_time = time.time()
-            else:
-                duration = end_time - start_time
-                start_time = time.time()
-            logging.info(
-                "TRAIN Step: %03d Objs: %e R1: %f\
-                R5: %f Duration: %ds BTime: %.3fs",
-                step,
-                objs.avg,
-                top1.avg,
-                top5.avg,
-                duration,
-                batch_time.avg,
-            )
-            '''
+            reduced_loss = reduce_tensor(loss.data, args.world_size)
+            losses_m.update(reduced_loss.item(), input.size(0))
+        lr_schedule.step_update(num_updates=num_updates, metric=losses_m.avg)
+
         del loss, logits, target
-    return top1.avg, objs.avg
+    return top1.avg, losses_m.avg
 
 
 def infer_tpu(
@@ -152,7 +145,6 @@ def infer_tpu(
 def train_x_epochs_tpu(
     _epochs,
     lr_scheduler,
-    wd_scheduler,
     train_queue,
     valid_queue,
     model,
@@ -190,7 +182,6 @@ def train_x_epochs_tpu(
             criterion,
             optimizer,
             lr_scheduler,
-            wd_scheduler,
             mixup_fn,
             args.report_freq,
             args.fast,

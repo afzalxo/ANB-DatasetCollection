@@ -317,8 +317,8 @@ def main():
         )
     rank_trainables = [False] * args.world_size
     mem, trainable = profile_memory(args.design, activation_fn, mode, args.local_rank)
-    if mem > 23.0:
-        print(f'Memory required {mem} greater than 23.0 GiB threshold...')
+    if mem > 22.0:
+        print(f'Memory required {mem} greater than 22.0 GiB threshold...')
         trainable = False
     rank_trainables[args.global_rank] = trainable
     rank_trainables = torch.Tensor([rank_trainables])
@@ -328,7 +328,7 @@ def main():
     else:
         trainable = True
     if args.global_rank == 0:
-        wandb_art = wandb.Artifact(name=f'trainability-search-try154-{args.search_algo}-{args.arch_epoch}-{args.episode}-{args.version}', type='custom', metadata={'trainable': trainable})
+        wandb_art = wandb.Artifact(name=f'trainability-search-try155-{args.search_algo}-{args.arch_epoch}-{args.episode}-{args.version}', type='custom', metadata={'trainable': trainable})
         args.wandb_con.log_artifact(wandb_art)
     if args.distributed:
         dist.barrier()
