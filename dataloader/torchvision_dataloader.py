@@ -98,10 +98,11 @@ def build_torchvision_loader_tpu_improved(args):
     args.input_size = 224
     args.imagenet_default_mean_and_std = True
     args.train_interpolation = "bicubic"
-    args.reprob = 0.25
+    args.reprob = 0.20
     args.remode = "pixel"
     args.recount = 1
-    args.aa = "rand-m9-mstd0.5-inc1"
+    # args.aa = "rand-m9-mstd0.5-inc1"
+    args.aa = "rand-m9-mstd0.5"
     args.color_jitter = 0.4
     args.crop_pct = None  # 224 / 256
 

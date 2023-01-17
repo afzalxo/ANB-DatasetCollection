@@ -26,7 +26,7 @@ import torch_xla.utils.utils as xu
 
 
 import auxiliary.utils as utils
-from trainval.trainval_tpu_new import train_x_epochs_tpu
+from trainval.trainval_tpu import train_x_epochs_tpu
 from dataloader.torchvision_dataloader import build_torchvision_loader_tpu_improved as build_torchvision_loader_tpu
 from auxiliary.utils import CrossEntropyLabelSmooth
 from auxiliary.utils import create_optimizer_tpu
@@ -34,10 +34,9 @@ from models.accelbenchnet import AccelNet as Network
 from searchables import searchables
 
 from timm.data.mixup import Mixup
-from timm.loss import SoftTargetCrossEntropy
+from timm.loss import LabelSmoothingCrossEntropy
 from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler_v2, scheduler_kwargs
-from timm.models import create_model
 
 
 warnings.filterwarnings("ignore")
@@ -155,7 +154,8 @@ def map_fn(index, args):
 
     train_queue, valid_queue, len_tdset = build_torchvision_loader_tpu(args)
     # criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(device)
-    criterion = SoftTargetCrossEntropy().to(device)
+    # criterion = SoftTargetCrossEntropy().to(device)
+    criterion = LabelSmoothingCrossEntropy(smoothing=args.label_smoothing)
     total_batch_size = args.train_batch_size * args.update_freq * args.world_size
     args.train_steps_per_epoch = len_tdset // total_batch_size
     args.writer = None

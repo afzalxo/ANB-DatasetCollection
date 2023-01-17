@@ -10,7 +10,6 @@ import torch_xla.core.xla_model as xm
 
 import auxiliary.utils as utils
 
-from models.accelbenchnet import AccelNet as Network
 import torch_xla.distributed.parallel_loader as pl
 from timm.utils import reduce_tensor
 
