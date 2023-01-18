@@ -11,7 +11,7 @@ import torch_xla.core.xla_model as xm
 import auxiliary.utils as utils
 
 import torch_xla.distributed.parallel_loader as pl
-from timm.utils import reduce_tensor
+import torch_xla.test.test_utils as test_utils
 
 
 def _train_update(device, step, loss, tracker, epoch, writer):
@@ -53,92 +53,57 @@ def train_epoch_tpu(
     for step, (input, target) in enumerate(iterator):
         b_start = time.time()
         last_batch = step == last_idx
-
-        # _step = step // args.update_freq
-        # if _step >= args.train_steps_per_epoch:
-        #    continue
-        # it = epoch*args.train_steps_per_epoch + _step
-        '''
-        if lr_schedule is not None or wd_schedule is not None and step % args.update_freq == 0:
-            for i, param_group in enumerate(optimizer.param_groups):
-                if lr_schedule is not None:
-                    param_group['lr'] = lr_schedule[it] * param_group['lr_scale']
-                if wd_schedule is not None and param_group['weight_decay'] > 0:
-                    param_group['weight_decay'] = wd_schedule[it]
-        '''
-
         if mixup_fn is not None:
             input, target = mixup_fn(input, target)
-
         logits = model(input)
         loss = criterion(logits, target)
         optimizer.zero_grad()
-        loss /= args.update_freq
         loss.backward()
-        if (step + 1) % args.update_freq == 0:
-            xm.optimizer_step(optimizer)
-            # optimizer.zero_grad(set_to_none=True)
+        xm.optimizer_step(optimizer)
         tracker.add(args.train_batch_size)
         batch_time.update(time.time() - b_start)
         num_updates += 1
-        # prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-        # n = input.size(0)
-        # objs.update(loss.data.item(), n)
-        # top1.update(prec1.data.item(), n)
-        # top5.update(prec5.data.item(), n)
         if last_batch or step % report_freq == 0:
-            # end_time = time.time()
             xm.add_step_closure(_train_update, args=(args.local_rank, step, loss, tracker, epoch, args.writer))
-            reduced_loss = reduce_tensor(loss.data, args.world_size)
+            loss_clone = loss.data.clone()
+            xm.all_reduce(xm.REDUCE_SUM, loss_clone)
+            reduced_loss = loss_clone / args.world_size
             losses_m.update(reduced_loss.item(), input.size(0))
         lr_schedule.step_update(num_updates=num_updates, metric=losses_m.avg)
-
         del loss, logits, target
     return top1.avg, losses_m.avg
 
 
 def infer_tpu(
-    valid_queue, model, criterion, args, epoch, report_freq=100, fast=False
+    valid_queue, model, criterion, args, epoch, report_freq=100
 ):
 
     objs = utils.AvgrageMeter()
     top1 = utils.AvgrageMeter()
     top5 = utils.AvgrageMeter()
     model.eval()
-    import torch_xla.test.test_utils as test_utils
+    last_idx = len(valid_queue) - 1
 
-    for step, (input, target) in enumerate(valid_queue):
-        logits = model(input)
-        loss = criterion(logits, target)
+    with torch.no_grad():
+        for step, (input, target) in enumerate(valid_queue):
+            last_batch = step == last_idx
+            logits = model(input)
+            loss = criterion(logits, target)
 
-        prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
-        n = input.size(0)
-        objs.update(loss.data.item(), n)
-        top1.update(prec1.data.item(), n)
-        top5.update(prec5.data.item(), n)
+            prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
 
-        if step % report_freq == 0:
-            end_time = time.time()
-            xm.add_step_closure(test_utils.print_test_update, args=(args.local_rank, None, epoch, step))
-            '''
-            if step == 0:
-                duration = 0
-                start_time = time.time()
-            else:
-                duration = end_time - start_time
-                start_time = time.time()
-            logging.info(
-                "VALID Step: %03d Objs: %e R1: %f R5: %f Duration: %ds",
-                step,
-                objs.avg,
-                top1.avg,
-                top5.avg,
-                duration,
-            )
-            '''
-        del loss, logits, target
-    avg_top1_val, avg_top5_val, avg_loss = top1.avg, top5.avg, objs.avg
-    return avg_top1_val, avg_top5_val, avg_loss
+            reduced_loss = utils.reduce_xla_tensor(loss.data, args.world_size)
+            prec1 = utils.reduce_xla_tensor(prec1, args.world_size)
+            prec5 = utils.reduce_xla_tensor(prec5, args.world_size)
+
+            objs.update(reduced_loss.item(), input.size(0))
+            top1.update(prec1.item(), logits.size(0))
+            top5.update(prec5.item(), logits.size(0))
+
+            if last_batch or step % report_freq == 0:
+                xm.add_step_closure(test_utils.print_test_update, args=(args.local_rank, top1.avg, epoch, step))
+            del loss, logits, target
+    return top1.avg, top5.avg, objs.avg
 
 
 def train_x_epochs_tpu(
@@ -150,15 +115,12 @@ def train_x_epochs_tpu(
     criterion,
     optimizer,
     mixup_fn,
-    global_rank,
-    local_rank,
-    world_size,
-    wandb_con,
     args,
 ):
     train_sttime = time.time()
     best_acc_top1 = 0
     best_acc_top5 = 0
+    best_model_sd = model.state_dict()
     valid_acc_top1, valid_acc_top5, valid_obj = None, None, None
     device = xm.xla_device()
     train_queue = pl.MpDeviceLoader(train_queue, device)
@@ -166,17 +128,18 @@ def train_x_epochs_tpu(
 
     for epoch in range(_epochs):
         # training
+        '''
         lr = utils.adjust_lr(optimizer, epoch, args.lr, args.epochs)
         if epoch < 5 and args.train_batch_size > 256:
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr * (epoch + 1) / 5.0
             print("Warming-up Epoch: %d, LR: %e" % (epoch, lr * (epoch + 1) / 5.0))
+        '''
 
         epoch_start = time.time()
         train_acc, train_obj = train_epoch_tpu(
             epoch,
             train_queue,
-            valid_queue,
             model,
             criterion,
             optimizer,
@@ -189,20 +152,17 @@ def train_x_epochs_tpu(
             args,
         )
 
-        # scheduler.step()
-        # logging.info('Train_acc %f', train_acc)
         epoch_duration = time.time() - epoch_start
         logging.info(
             "Epoch %d, Train_acc %f, Epoch time: %ds",
             epoch, train_acc, epoch_duration
         )
-        if global_rank == 0:
-            if wandb_con is not None:
-                #commit = True if epoch <= _epochs - 4 else False
-                commit = False
-                wandb_con.log({"t_acc": train_acc, "t_loss": train_obj}, commit=commit)
+        if args.global_rank == 0 and args.wandb_con is not None:
+            #commit = True if epoch <= _epochs - 4 else False
+            commit = False
+            args.wandb_con.log({"t_acc": train_acc, "t_loss": train_obj}, commit=commit)
         # validation
-        if epoch > -1:#_epochs - 4:
+        if epoch > -1:
             valid_acc_top1, valid_acc_top5, valid_obj = infer_tpu(
                 valid_queue,
                 model,
@@ -210,15 +170,13 @@ def train_x_epochs_tpu(
                 args,
                 epoch,
                 args.report_freq,
-                args.fast,
             )
-            # logging.info('Epoch %d, Valid_acc_top1 %f, Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f', epoch, valid_acc_top1, valid_acc_top5, best_acc_top1, best_acc_top5)
             avg_top1_val, avg_top5_val = valid_acc_top1, valid_acc_top5
 
-            if global_rank == 0 and wandb_con is not None:
+            if args.global_rank == 0 and args.wandb_con is not None:
                 #commit = True if epoch < _epochs - 1 else False
                 commit = True
-                wandb_con.log(
+                args.wandb_con.log(
                     {
                         "valid_acc_top1": avg_top1_val,
                         "valid_acc_top5": avg_top5_val,
@@ -231,7 +189,8 @@ def train_x_epochs_tpu(
                 best_acc_top5 = avg_top5_val
             if avg_top1_val > best_acc_top1:
                 best_acc_top1 = avg_top1_val
-            if global_rank == 0:
+                best_model_sd = model.state_dict()
+            if args.global_rank == 0:
                 print(
                     "Epoch %d, Valid_acc_top1 %f,\
                     Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f"
@@ -242,8 +201,9 @@ def train_x_epochs_tpu(
                 Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f",
                 epoch, avg_top1_val, avg_top5_val, best_acc_top1, best_acc_top5
             )
+        lr_scheduler.step(epoch + 1, valid_acc_top1)
     train_endtime = time.time()
-    if global_rank == 0:
+    if args.global_rank == 0:
         training_config_dict = {
             "model_num": args.model_num,
             "job_id": args.job_id,
@@ -260,7 +220,7 @@ def train_x_epochs_tpu(
         model_metadata_dict = {
             "macs": args.macs,
             "params": args.params,
-            "train_time": train_sttime - train_endtime,
+            "train_time": train_endtime - train_sttime,
             "best_acc_top1": best_acc_top1,
             "best_acc_top5": best_acc_top5,
             "architecture": args.design,
@@ -269,11 +229,11 @@ def train_x_epochs_tpu(
             {
                 "training_config": training_config_dict,
                 "model_metadata": model_metadata_dict,
-                "state_dict": model.state_dict(),
+                "state_dict": best_model_sd,
             },
             args.save,
         )
-        if args.use_wandb and wandb_con is not None:
+        if args.use_wandb and args.wandb_con is not None:
             import wandb
 
             wandb_art = wandb.Artifact(
@@ -285,9 +245,9 @@ def train_x_epochs_tpu(
                 },
             )
             wandb_art.add_file(f"{args.save}/f_model.pth")
-            wandb_con.log_artifact(wandb_art)
+            args.wandb_con.log_artifact(wandb_art)
 
-    return [train_acc, train_obj, avg_top1_val, avg_top5_val, valid_obj, True]
+    return [train_acc, train_obj, avg_top1_val, avg_top5_val, valid_obj]
 
 
 def infer_tv(

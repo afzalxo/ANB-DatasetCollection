@@ -162,6 +162,7 @@ def main():
     args.distributed = config["distributed"].getboolean("distributed")
     args.cluster = config["distributed"]["cluster"]
     args.port = config["distributed"]["port"]
+    # args.port = str(random.randint(50000,51000))
 
     args.CLASSES = CLASSES
     args.IMAGENET_MEAN = IMAGENET_MEAN
@@ -328,7 +329,7 @@ def main():
     else:
         trainable = True
     if args.global_rank == 0:
-        wandb_art = wandb.Artifact(name=f'trainability-search-try155-{args.search_algo}-{args.arch_epoch}-{args.episode}-{args.version}', type='custom', metadata={'trainable': trainable})
+        wandb_art = wandb.Artifact(name=f'trainability-search-try160-{args.search_algo}-{args.arch_epoch}-{args.episode}-{args.version}', type='custom', metadata={'trainable': trainable})
         args.wandb_con.log_artifact(wandb_art)
     if args.distributed:
         dist.barrier()

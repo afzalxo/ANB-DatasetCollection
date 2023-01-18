@@ -486,3 +486,21 @@ def _make_divisible(v: float, divisor: int, min_value: Optional[int] = None) -> 
     if new_v < 0.9 * v:
         new_v += divisor
     return new_v
+
+
+def setup_for_distributed(is_master):
+    """
+    This function disables printing when not in master process
+    """
+    import builtins as __builtin__
+
+    builtin_print = __builtin__.print
+
+    def print(*args, **kwargs):
+        force = kwargs.pop("force", False)
+        if is_master or force:
+            builtin_print(*args, **kwargs)
+
+    __builtin__.print = print
+
+
