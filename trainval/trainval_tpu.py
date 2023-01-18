@@ -30,14 +30,12 @@ def train_epoch_tpu(
     epoch,
     train_queue,
     model,
+    model_ema,
     criterion,
     optimizer,
     lr_schedule,
     mixup_fn,
     report_freq,
-    fast,
-    epochs,
-    argslr,
     args
 ):
     tracker = xm.RateTracker()
@@ -60,6 +58,10 @@ def train_epoch_tpu(
         optimizer.zero_grad()
         loss.backward()
         xm.optimizer_step(optimizer)
+
+        if model_ema is not None:
+            model_ema.update(model)
+
         tracker.add(args.train_batch_size)
         batch_time.update(time.time() - b_start)
         num_updates += 1
@@ -112,6 +114,7 @@ def train_x_epochs_tpu(
     train_queue,
     valid_queue,
     model,
+    model_ema,
     criterion,
     optimizer,
     mixup_fn,
@@ -141,14 +144,12 @@ def train_x_epochs_tpu(
             epoch,
             train_queue,
             model,
+            model_ema,
             criterion,
             optimizer,
             lr_scheduler,
             mixup_fn,
             args.report_freq,
-            args.fast,
-            _epochs,
-            args.lr,
             args,
         )
 

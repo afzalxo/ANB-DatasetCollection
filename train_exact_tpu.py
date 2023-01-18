@@ -32,6 +32,7 @@ from timm.data.mixup import Mixup
 from timm.loss import LabelSmoothingCrossEntropy
 from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler_v2, scheduler_kwargs
+from timm.utils import ModelEmaV2
 
 
 warnings.filterwarnings("ignore")
@@ -138,6 +139,7 @@ def map_fn(index, args):
     args.writer = None
     if xm.is_master_ordinal():
         import torch_xla.test.test_utils as test_utils
+
         args.writer = test_utils.get_summary_writer(args.save)
 
     mixup_fn = None
@@ -173,6 +175,14 @@ def map_fn(index, args):
         model = Network(design=args.design, activation_fn=activation_fn, mode=mode)
         model = model.to(device)
 
+        model_ema = None
+        if args.model_ema:
+            model_ema = ModelEmaV2(
+                model,
+                decay=args.model_ema_decay,
+                device="cpu" if args.model_ema_force_cpu else None,
+            )
+
         args.opt = "rmsproptf"
         args.lr = 0.064
         args.weight_decay = 1e-5
@@ -195,6 +205,7 @@ def map_fn(index, args):
             train_queue,
             valid_queue,
             model,
+            model_ema,
             criterion,
             optimizer,
             mixup_fn,
@@ -266,6 +277,10 @@ def main():
     args.mixup_switch_prob = 0.5
     args.cutmix = 1
     args.cutmix_minmax = None
+
+    args.model_ema = True
+    args.model_ema_decay = 0.9999
+    args.model_ema_force_cpu = True
 
     os.environ["XLA_USE_BF16"] = "1"
     job_id = os.getpid()
