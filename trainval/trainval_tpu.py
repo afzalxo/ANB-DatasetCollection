@@ -278,31 +278,26 @@ def train_x_epochs_tpu(
 
 
 import torch_xla.test.test_utils as test_utils
-def throughput_tpu(
+def throughput_train_tpu(
     valid_queue, model, optimizer, criterion, args, report_freq=100
 ):
     # model.eval()
     model.train()
-    repetitions = 1
+    repetitions = 2
     total_time = 0
     warmup_reps = 0
     device = xm.xla_device()
     start_time = time.time()
     rep_time = []
     rates = []
-    cur_rate = [torch.zeros(1, device=device)]
     last_rate = 0
     tracker = xm.RateTracker()
     last_thro = 0
-    repetitions = 1 
-    report_freq = 20
-    loader = valid_queue#itertools.chain(valid_queue, valid_queue)
-    import torch_xla.test.test_utils as test_utils
+    repetitions = 2
+    report_freq = 100000
     for rep in range(repetitions):
         rep_start = time.time()
-        for step, (input, target) in enumerate(loader):
-            if step > 300:
-                continue
+        for step, (input, target) in enumerate(valid_queue):
             logits = model(input)
             loss = criterion(logits, target)
             optimizer.zero_grad()
@@ -311,7 +306,6 @@ def throughput_tpu(
 
             tracker.add(args.val_batch_size)
             if ((step + 1) % report_freq) == 0:
-                # xm.wait_device_ops()
                 cur_rate = tracker.rate()
                 grate = tracker.global_rate()
                 # xm.add_step_closure(_train_update, args=(args.local_rank, step, 0, tracker, 0, None))
@@ -323,39 +317,63 @@ def throughput_tpu(
                       grate)
 
 
-                # xm.add_step_closure(test_utils.print_test_update, args=(args.local_rank, None, 0, step))
-                # old_rate = cur_rate
-                # cur_rate = [torch.tensor(tracker.rate(), device=device)]
-                # xm.all_reduce(xm.REDUCE_SUM, cur_rate)
-                # print(f'Rates: {tracker.rate()}, {tracker.global_rate()}, Sum: {cur_rate}, Change: {cur_rate[0]-old_rate[0]}')
-                # print(f'Rank: {args.local_rank}, step: {step}, Current Rate: {cur_rate}, Global Rate: {tracker.global_rate()}, Rate Change: {cur_rate-last_rate}')
                 last_rate = cur_rate
-                if step+1 >= 180 and step+1 <= 300:
+                if step+1 >= 60: # and step+1 <= 300:
                     rates.append(last_rate)
-                # if step+1 == 450:
-                #    break
-                # xm.rendezvous('step_finished')
+        xm.wait_device_ops()
         rep_time.append(time.time() - rep_start)
-        # print(rep_time)
-        # print(rates)
-    # total_time = sum(rep_time[warmup_reps:])
+        print(rep_time)
+    '''
     mean_thr = np.mean(rates)
     std_thr = np.square(np.std(rates))
     print(f'Mean: {mean_thr}, Std: {std_thr}')
+    '''
 
-    mean_thr = xm.mesh_reduce('mean_thr', mean_thr, np.sum)
-    std_thr = np.sqrt(xm.mesh_reduce('std_thr', std_thr, np.sum))
+    mean_thr = xm.mesh_reduce('mean_thr', rep_time[-1], np.mean)
+    std_thr = np.sqrt(xm.mesh_reduce('std_thr', rep_time[-1], np.std))
     print(f'Mean: {mean_thr}, Std: {std_thr}')
     del model, valid_queue
 
-    # throughput = [torch.tensor(mean_thr, device=device)]
-    # total_time = 0.1
-    # throughput = [torch.tensor(((repetitions - warmup_reps) * args.val_batch_size * len(valid_queue))/total_time, device=device)]
-    # print(f'Throughput: {throughput}')
-    # xm.all_reduce(xm.REDUCE_SUM, throughput)
-    # print(f'Summed Throughput: {throughput}')
-    # _std = torch.std(throughput[])
-    # print(f'Summed Std: {_std}')
+    return mean_thr, std_thr
 
-    # avg_top1_val, avg_top5_val, avg_loss = top1.avg, top5.avg, objs.avg
+def throughput_val_tpu(
+    valid_queue, model, args, report_freq=100
+):
+    model.eval()
+    device = xm.xla_device()
+    rep_time = []
+    rates = []
+    last_rate = 0
+    tracker = xm.RateTracker()
+    repetitions = 1
+    report_freq = 50
+    for rep in range(repetitions):
+        rep_start = time.time()
+        for step, (input, target) in enumerate(valid_queue):
+            logits = model(input)
+            xm.mark_step()
+
+            tracker.add(args.val_batch_size)
+            if ((step + 1) % report_freq) == 0:
+                xm.wait_device_ops()
+                cur_rate = tracker.rate()
+                grate = tracker.global_rate()
+                test_utils.print_training_update(
+                      args.local_rank,
+                      step,
+                      cur_rate-last_rate,
+                      cur_rate,
+                      grate)
+                last_rate = cur_rate
+                if step+1 >= 300: # and step+1 <= 300:
+                    rates.append(last_rate)
+        xm.wait_device_ops()
+        rep_time.append(time.time() - rep_start)
+        # print(rep_time)
+    mean_thr = np.mean(rates)
+    std_thr = np.std(rates)
+    print(f'Mean: {mean_thr}, Std: {std_thr}')
+
+    del model, valid_queue
+
     return mean_thr, std_thr
