@@ -29,13 +29,17 @@ import torch_xla.utils.utils as xu
 
 import auxiliary.utils as utils
 from trainval.trainval_tpu import train_x_epochs_tpu
+from trainval.trainval_tpu import train_epoch_tpu
 from trainval.trainval_tpu import throughput_tpu
-from dataloader.torchvision_dataloader import build_torchvision_loader_tpu
+from dataloader.torchvision_dataloader import build_torchvision_loader_tpu_improved
 from auxiliary.utils import CrossEntropyLabelSmooth
 from auxiliary.utils import create_optimizer
 from models.accelbenchnet import AccelNet as Network
 from searchables import searchables
 
+from timm.loss import LabelSmoothingCrossEntropy
+from timm.optim import create_optimizer_v2, optimizer_kwargs
+from timm.scheduler import create_scheduler_v2, scheduler_kwargs
 warnings.filterwarnings("ignore")
 
 
@@ -59,8 +63,8 @@ def setup_for_distributed(is_master):
     __builtin__.print = print
 
 
-def profile_model(input_size, design, platform, mode):
-    model_temp = Network(design=design, platform=platform, mode=mode)
+def profile_model(input_size, design, activation_fn, mode):
+    model_temp = Network(design=design, activation_fn=activation_fn, mode=mode)
     input = torch.randn(input_size)
     macs, params = profile(model_temp, inputs=(input,))
     macs, params = macs / 1000000, params / 1000000
@@ -72,13 +76,13 @@ def profile_model(input_size, design, platform, mode):
 
 
 def map_fn(index, args):
-    local_rank = global_rank = args.local_rank = args.global_rank = index#xm.get_ordinal()
-    args.world_size = world_size = 8#xm.xrt_world_size()
+    local_rank = global_rank = args.local_rank = args.global_rank = index
+    args.world_size = world_size = 8
     DEV_NAME = 'TPUv3'
     args.use_wandb = True if global_rank == 0 and args.use_wandb else False
 
     args.save = "{}exp-throughput-{}-{}-{}-{}".format(
-        args.save, DEV_NAME, args.job_id, args.note, time.strftime("%Y%m%d-%H%M%S")
+        args.save, DEV_NAME, args.job_id, args.note, time.strftime("%Y%m%d-%H%M")
     )
     print(
         f"Global Rank {global_rank}, Local Rank {local_rank},\
@@ -110,9 +114,12 @@ def map_fn(index, args):
     wandb_con = None
     wandb_art = None
     wandb_metadata_dir = None
+    import wandb
+    os.environ["WANDB_API_KEY"] = "166a45fa2ad2b2db9ec555119b273a3a9bdacc41"
+    os.environ["WANDB_ENTITY"] = "europa1610"
+    os.environ["WANDB_PROJECT"] = "NASBenchFPGA"
     if args.use_wandb and global_rank == 0:
         wandb_metadata_dir = args.save
-        import wandb
 
         os.environ["WANDB_API_KEY"] = "166a45fa2ad2b2db9ec555119b273a3a9bdacc41"
         os.environ["WANDB_ENTITY"] = "europa1610"
@@ -144,15 +151,14 @@ def map_fn(index, args):
         wandb_art = None
 
     logging.info("args = %s", args)
-    os.makedirs(os.path.join(args.save, "csv"))
+    if args.global_rank == 0:
+        os.makedirs(os.path.join(args.save, "csv"))
 
     device = xm.xla_device()
     args.in_memory = True
     m = 0
     version = 0
     missing_counter = 0
-    # xm.rendezvous('Finishing...')
-    # return
 
     job_ids = [10237, 10239, 10240, 10241, 10265, 10266, 10268, 10269, 10270, 10272,
                10277, 10279, 10280, 10286, 10298, 10325, 10338, 10342, 10344, 10345,
@@ -162,74 +168,89 @@ def map_fn(index, args):
                10432, 10433, 10435, 10436, 10457, 10458, 10459, 10461, 10463, 10465,
                10466, 10467, 10468]
     job_ids = [10474, 10475, 10476, 10477, 10478, 10479, 10000, 10481, 10001, 10523, 10522, 10525]
+    job_ids = [10522]
 
     table_rows = []
 
-    train_queue, valid_queue = build_torchvision_loader_tpu(args)
+    args.opt = "rmsproptf"
+    args.lr = 0.010
+    args.weight_decay = 1e-5
+    args.momentum = 0.9
+    args.opt_eps = 0.001
+    criterion = LabelSmoothingCrossEntropy(smoothing=0.1)
+
+    train_queue, valid_queue, _ = build_torchvision_loader_tpu_improved(args)
     train_queue = pl.MpDeviceLoader(train_queue, device)
     valid_queue = pl.MpDeviceLoader(valid_queue, device)
     args.writer = None
-    platform, mode = "fpga", "train"
+    activation_fn, mode = "silu", "train"
     if xm.is_master_ordinal():
         import torch_xla.test.test_utils as test_utils
         args.writer = test_utils.get_summary_writer(args.save)
-    with open(os.path.join(args.save, "csv", f"throughput_{DEV_NAME}.csv"), "a+") as fh:
+    with open(os.path.join(args.save, f"throughput_{args.global_rank}_{DEV_NAME}.csv"), "a+") as fh:
         writer = csv.writer(fh)
         for jid in job_ids:
             finished = False
             while not finished:
-                try:
-                    finished = False
-                    artifact = wandb_con.use_artifact(
-                            f"europa1610/NASBenchFPGA/models-random-jobid{jid}-model{version}:v0",
-                            type="model",
-                    )
-                    md = artifact.metadata["model_metadata"]
-                    args.design = md["architecture"]
-                    blocks = np.array(args.design)[:, 0]
-                    print(f'Job ID: {jid}, Version {version}')
-                    if 'FMB' in blocks:
-                        version += 1
-                        continue
-                    if len(args.design[0]) == 7:
-                        for p in range(7):
-                            args.design[p].append(False)
-                    # args.design = (searchables.RandomSearchable())
-                    logging.info(
-                        "Job ID: %d, Model Number: %d, MACS: %f, MParams %f, Design: \n%s",
-                        jid,
-                        m,
-                        md['macs'],
-                        md['params'],
-                        np.array(args.design),
-                    )
-                    model = Network(design=args.design, platform=platform, mode=mode)
-                    # model = model.to(memory_format=torch.channels_last)
-                    model = model.to(device)
-                    mean_thr, std_thr = throughput_tpu(train_queue, model, args, 0)
-                    m += 1
-                    row = [
-                        m,
-                        jid,
-                        version,
-                        float(md["best_acc_top1"]),
-                        float(md["best_acc_top5"]),
-                        float(md["macs"]),
-                        float(md["params"]),
-                        abs(float(md["train_time"])),
-                        mean_thr,
-                        std_thr,
-                    ]
-                    table_rows.append(row)
-                    writer.writerow(row)
-                    fh.flush()
+                # try:
+                finished = True
+                api = wandb.Api()
+                artifact = api.artifact(
+                        # f"europa1610/NASBenchFPGA/models-random-jobid{jid}-model{version}:v0",
+                        "europa1610/NASBenchFPGA/models-random-jobid10522-model0:v0",
+                        type="model"
+                )
+                md = artifact.metadata["model_metadata"]
+                print(md)
+                args.design = md["architecture"]
+                blocks = np.array(args.design)[:, 0]
+                print(f'Job ID: {jid}, Version {version}')
+                if 'FMB' in blocks:
                     version += 1
-                    m += 1
-                    missing_counter = 0
-                    del model
+                    continue
+                if len(args.design[0]) == 7:
+                    for p in range(7):
+                        args.design[p].append(False)
+                args.design = searchables.EffNetB0Conf()
+                logging.info(
+                    "Job ID: %d, Model Number: %d, MACS: %f, MParams %f, Design: \n%s",
+                    jid,
+                    m,
+                    md['macs'],
+                    md['params'],
+                    np.array(args.design),
+                )
+                model = Network(design=args.design, activation_fn=activation_fn, mode=mode)
+                model = model.to(device)
+                optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
+                mean_thr, std_thr = throughput_tpu(train_queue, model, optimizer, criterion, args)
+                # mean_thr, std_thr = 0, 0
+                # train_epoch_tpu(0, train_queue, model, None, criterion, optimizer, None, None, 100, args)
+                m += 1
+                row = [
+                    m,
+                    jid,
+                    version,
+                    float(md["best_acc_top1"]),
+                    float(md["best_acc_top5"]),
+                    float(md["macs"]),
+                    float(md["params"]),
+                    abs(float(md["train_time"])),
+                    mean_thr,
+                    std_thr,
+                ]
+                table_rows.append(row)
+                writer.writerow(row)
+                fh.flush()
+                version += 1
+                m += 1
+                missing_counter = 0
+                del model
+                '''
                 except KeyboardInterrupt:
                     print('Abort...')
-                    args.wandb_con.finish()
+                    if wandb_con is not None:
+                        args.wandb_con.finish()
                     exit(0)
                 except:
                     print(
@@ -242,6 +263,7 @@ def map_fn(index, args):
                         finished = True
                         version = 0
                         missing_counter = 0
+                '''
     columns = [
         "Model Num",
         "Job ID",
@@ -255,11 +277,11 @@ def map_fn(index, args):
         "Throughput Std",
     ]
     df = pd.DataFrame(table_rows, columns=columns)
-    print(df.head())
-    table = wandb.Table(dataframe=df)
-    artifact = wandb.Artifact(f"throughput_dataset_{DEV_NAME}", "dataset")
-    artifact.add(table, f"throughput_dataset_{DEV_NAME}")
-    args.wandb_con.log_artifact(artifact)
+    if args.global_rank == 0 and args.wandb_con is not None:
+        table = wandb.Table(dataframe=df)
+        artifact = wandb.Artifact(f"throughput_dataset_{DEV_NAME}", "dataset")
+        artifact.add(table, f"throughput_dataset_{DEV_NAME}")
+        args.wandb_con.log_artifact(artifact)
 
     print(f'Returning from Rank {args.local_rank}')
     xm.rendezvous('checking_out')
@@ -267,10 +289,6 @@ def map_fn(index, args):
 #### Map Function
 
 def main():
-    CLASSES = 1000
-    IMAGENET_MEAN = np.array([0.485, 0.456, 0.406]) * 255
-    IMAGENET_STD = np.array([0.229, 0.224, 0.225]) * 255
-    DEFAULT_CROP_RATIO = 224 / 256
 
     parser = argparse.ArgumentParser("")
     parser.add_argument("--cfg_path")
@@ -285,70 +303,25 @@ def main():
     args.save = config["logging"]["save"]
     args.note = config["logging"]["note"]
     args.report_freq = config["logging"].getint("report_freq")
-    args.fast = config["logging"].getboolean("fast")
     args.use_wandb = config["logging"].getboolean("use_wandb")
-    # model
-    args.label_smoothing = config["model"].getfloat("label_smoothing")
-    args.design = config["model"]["design"]
     # dataloaders
     args.train_dataset = config["dataloader"]["train_dataset"]
-    args.val_dataset = config["dataloader"]["val_dataset"]
     args.num_workers = config["dataloader"].getint("num_workers")
     args.in_memory = config["dataloader"].getboolean("in_memory")
     # trainval
-    args.epochs = config["trainval"].getint("epochs")
     args.train_batch_size = config["trainval"].getint("train_batch_size")
     args.val_batch_size = config["trainval"].getint("val_batch_size")
-    args.val_resolution = config["trainval"].getint("val_resolution")
-    args.lr_tta = config["trainval"].getboolean("lr_tta")
-    args.min_res = config["trainval"].getint("min_res")
-    args.max_res = config["trainval"].getint("max_res")
-    args.start_ramp = config["trainval"].getint("start_ramp")
-    args.end_ramp = config["trainval"].getint("end_ramp")
     args.seed = config["trainval"].getint("seed")
-    # optimizer
-    args.lr = config["optimizer"].getfloat("lr")
-    args.weight_decay = config["optimizer"].getfloat("weight_decay")
-    args.lr_peak_epoch = config["optimizer"].getint("lr_peak_epoch")
-    # distributed
-    args.distributed = config["distributed"].getboolean("distributed")
-    args.cluster = config["distributed"]["cluster"]
-    args.port = config["distributed"]["port"]
 
-    args.CLASSES = CLASSES
-    args.IMAGENET_MEAN = IMAGENET_MEAN
-    args.IMAGENET_STD = IMAGENET_STD
-    args.DEFAULT_CROP_RATIO = DEFAULT_CROP_RATIO
-
-    if args.distributed and args.cluster == "tacc":
-        global_rank = int(os.environ["SLURM_PROCID"])
-        local_rank = int(os.environ["SLURM_LOCALID"])
-        world_size = int(os.environ["SLURM_NTASKS"])
-        iplist = os.environ["SLURM_JOB_NODELIST"]
-        job_id = int(os.environ["SLURM_JOB_ID"])
-        ip = subprocess.getoutput(f"scontrol show hostname {iplist} | head -n1")
-        setup_for_distributed(global_rank == 0)
-    elif args.distributed and args.cluster == "local":
-        local_rank = int(os.environ["LOCAL_RANK"])
-        global_rank = int(os.environ["LOCAL_RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
-        job_id = 10001# int(os.getpid())
-        ip = "127.0.0.1"
-        setup_for_distributed(global_rank == 0)
-    elif args.distributed and args.cluster == "tpu":
-        os.environ['XLA_USE_BF16'] = '1' # Enable bfloat16
-        job_id = 20000
-        ip = "127.0.0.1"
-    else:
-        global_rank = 0
-        job_id = 0
-        ip = "localhost"
+    os.environ['XLA_USE_BF16'] = '1' # Enable bfloat16
+    job_id = 20000
+    ip = "127.0.0.1"
 
     args.ip = ip
     args.job_id = job_id
 
     flags = args
-    xmp.spawn(map_fn, args=(flags,), nprocs=1, start_method='fork')
+    xmp.spawn(map_fn, args=(flags,), nprocs=8, start_method='fork')
     print('Finished...')
     exit(0)
 

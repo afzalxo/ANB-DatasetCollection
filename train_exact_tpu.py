@@ -50,13 +50,13 @@ def profile_model(input_size, design, activation_fn, mode):
 
 
 def map_fn(index, args):
-    local_rank = global_rank = args.local_rank = args.global_rank = xm.get_ordinal()
-    args.world_size = world_size = xm.xrt_world_size()
+    local_rank = global_rank = args.local_rank = args.global_rank = index# xm.get_ordinal()
+    args.world_size = world_size = 8 # xm.xrt_world_size()
 
     args.use_wandb = True if global_rank == 0 and args.use_wandb else False
 
     args.save = "{}tpuv3Train-{}-{}-{}".format(
-        args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M%S")
+        args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M")
     )
     print(
         f"Global Rank {global_rank}, Local Rank {local_rank},\
@@ -184,17 +184,19 @@ def map_fn(index, args):
             )
 
         args.opt = "rmsproptf"
-        args.lr = 0.064
+        args.lr = 0.010
         args.weight_decay = 1e-5
         args.momentum = 0.9
         args.opt_eps = 0.001
         optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
 
-        args.epochs = 200
+        args.epochs = 450
         args.decay_epochs = 2.4
         args.decay_rate = 0.97
         args.sched = "step"
         args.warmup_lr = 1e-6
+        args.lr_cycle_decay = 0.5
+        args.decay_milestones = [90, 180, 270]
         lr_scheduler, num_epochs = create_scheduler_v2(
             optimizer, **scheduler_kwargs(args), updates_per_epoch=len(train_queue)
         )
@@ -278,7 +280,7 @@ def main():
     args.cutmix = 1
     args.cutmix_minmax = None
 
-    args.model_ema = True
+    args.model_ema = False
     args.model_ema_decay = 0.9999
     args.model_ema_force_cpu = True
 
@@ -291,6 +293,7 @@ def main():
     args.update_freq = 1
     flags = args
     xmp.spawn(map_fn, args=(flags,), nprocs=8, start_method="fork")
+    exit(0)
 
 
 if __name__ == "__main__":

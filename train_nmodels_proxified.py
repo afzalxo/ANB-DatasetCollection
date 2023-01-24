@@ -275,7 +275,7 @@ def main():
     args.in_memory = True
     train_success = True
     m = 0
-    models_to_eval = 300
+    models_to_eval = 200
 
     train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
     criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
@@ -306,8 +306,8 @@ def main():
             )
         rank_trainables = [False] * args.world_size
         mem, trainable = profile_memory(args.design, activation_fn, mode, args.local_rank)
-        if mem > 23.0:
-            print(f'Memory required {mem} greater than 23.0 GiB threshold...')
+        if mem > 22.0:
+            print(f'Memory required {mem} greater than 22.0 GiB threshold...')
             trainable = False
         rank_trainables[args.global_rank] = trainable
         rank_trainables = torch.Tensor([rank_trainables])
