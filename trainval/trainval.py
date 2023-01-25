@@ -485,9 +485,7 @@ def dry_run(design, platform, mode, criterion, args):
 
 
 def throughput_gpu(valid_queue, model, args, report_freq=100):
-
     model.eval()
-
     warmup_reps = 1
     measurement_reps = 2
     total_time = 0

@@ -64,8 +64,8 @@ def setup_for_distributed(is_master):
     __builtin__.print = print
 
 
-def profile_model(input_size, design, platform, mode, local_rank):
-    model_temp = Network(design=design, platform=platform, mode=mode)
+def profile_model(input_size, design, activation_fn, mode, local_rank):
+    model_temp = Network(design=design, activation_fn=activation_fn, mode=mode)
     input = torch.randn(input_size)  # .to(f'cuda:{local_rank}')
     macs, params = profile(model_temp, inputs=(input,))
     macs, params = macs / 1000000, params / 1000000
@@ -208,9 +208,9 @@ def main():
     wandb_con = None
     wandb_art = None
     wandb_metadata_dir = None
+    import wandb
     if args.use_wandb and global_rank == 0:
         wandb_metadata_dir = args.save
-        import wandb
 
         os.environ["WANDB_API_KEY"] = "166a45fa2ad2b2db9ec555119b273a3a9bdacc41"
         os.environ["WANDB_ENTITY"] = "europa1610"
@@ -261,11 +261,14 @@ def main():
                10382, 10383, 10384, 10386, 10387, 10402, 10403, 10404, 10406, 10407,
                10432, 10433, 10435, 10436, 10457, 10458, 10459, 10461, 10463, 10465,
                10466, 10467, 10468]
+    job_ids = [10474, 10475, 10476, 10477, 10478, 10479, 10000, 10481, 10001, 10523, 10522, 10525]
+    job_ids = [10527, 10528, 10529, 10530, 10531, 10532, 11996, 11998, 11999, 12000, 12001, 12003, 12004]
+
 
     table_rows = []
     args.min_res, args.max_res = 224, 224
     train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
-    platform, mode = "fpga", "train"
+    activation_fn, mode = "relu", "train"
     with open(os.path.join(args.save, "csv", f"throughput_{GPU_DEV}.csv"), "a+") as fh:
         writer = csv.writer(fh)
         for jid in job_ids:
@@ -273,7 +276,8 @@ def main():
             while not finished:
                 try:
                     finished = False
-                    artifact = wandb_con.use_artifact(
+                    api = wandb.Api()
+                    artifact = api.artifact(
                         f"europa1610/NASBenchFPGA/models-random-jobid{jid}-model{version}:v0",
                         type="model",
                     )
@@ -297,14 +301,14 @@ def main():
                         args.macs, args.params = profile_model(
                             (1, 3, 224, 224),
                             design=args.design,
-                            platform=platform,
+                            activation_fn=activation_fn,
                             mode=mode,
                             local_rank=args.local_rank,
                         )
                     """
                     if args.distributed:
                         dist.barrier()
-                    model = Network(design=args.design, platform=platform, mode=mode)
+                    model = Network(design=args.design, activation_fn=activation_fn, mode=mode)
                     model = model.to(memory_format=torch.channels_last)
                     model = model.to(f"cuda:{local_rank}")
 
@@ -325,7 +329,7 @@ def main():
                         float(md["best_acc_top5"]),
                         float(md["macs"]),
                         float(md["params"]),
-                        -1 * float(md["train_time"]),
+                        abs(float(md["train_time"])),
                         mean_thr,
                         std_thr,
                     ]
