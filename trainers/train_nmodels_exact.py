@@ -240,7 +240,6 @@ def main():
     for m in range(2, 9):
         args.model_num = m
         dist.barrier()
-        ### Loading design from artifact here. Sometimes not downloaded properly, hence try except
         not_loaded = True
         while not_loaded:
             try:

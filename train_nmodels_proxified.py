@@ -67,40 +67,54 @@ def setup_for_distributed(is_master):
     __builtin__.print = print
 
 
-def profile_memory(design, activation_fn, mode, rank):
+def profile_memory(design, activation_fn, mode, batch_size, res, rank):
     after_backward, before_model = 0, 0
     try:
         criterion = torch.nn.CrossEntropyLoss()
-        before_model = torch.cuda.max_memory_allocated(device=torch.device(f'cuda:{rank}'))
-        model_temp = Network(design=design, activation_fn=activation_fn, mode=mode).to(f'cuda:{rank}')
-        after_model = torch.cuda.max_memory_allocated(device=torch.device(f'cuda:{rank}'))
-        input_mem = torch.randn((512, 3, 192, 192), dtype=torch.float32).to(f'cuda:{rank}')
-        target = torch.randn((512, 1000), dtype=torch.float32).to(f'cuda:{rank}')
+        before_model = torch.cuda.max_memory_allocated(
+            device=torch.device(f"cuda:{rank}")
+        )
+        model_temp = Network(design=design, activation_fn=activation_fn, mode=mode).to(
+            f"cuda:{rank}"
+        )
+        after_model = torch.cuda.max_memory_allocated(
+            device=torch.device(f"cuda:{rank}")
+        )
+        input_mem = torch.randn((batch_size, 3, res, res), dtype=torch.float32).to(
+            f"cuda:{rank}"
+        )
+        target = torch.randn((batch_size, 1000), dtype=torch.float32).to(f"cuda:{rank}")
         with autocast():
             output = model_temp(input_mem.contiguous(memory_format=torch.channels_last))
-        after_forward = torch.cuda.max_memory_allocated(device=torch.device(f'cuda:{rank}'))
+        after_forward = torch.cuda.max_memory_allocated(
+            device=torch.device(f"cuda:{rank}")
+        )
         loss = criterion(output, target)
         loss.backward()
-        after_backward = torch.cuda.max_memory_allocated(device=torch.device(f'cuda:{rank}'))
-        print(f'Forward Only: {(after_forward-after_model)/10**9}, Forward-Backward Total: {(after_backward-after_model)/10**9}, Including Model: {(after_backward-before_model)/10**9}')
+        after_backward = torch.cuda.max_memory_allocated(
+            device=torch.device(f"cuda:{rank}")
+        )
+        print(
+            f"Forward Only: {(after_forward-after_model)/10**9}, Forward-Backward Total: {(after_backward-after_model)/10**9}, Including Model: {(after_backward-before_model)/10**9}"
+        )
         del model_temp, target, input_mem, output, loss
         torch.cuda.empty_cache()
         gc.collect()
         trainable = True
     except RuntimeError:
-        print('Ran out of GPU memory... Untrainable...')
+        print("Ran out of GPU memory... Untrainable...")
         trainable = False
-    return (after_backward - before_model)/10**9, trainable
+    return (after_backward - before_model) / 10**9, trainable
 
 
 def profile_model(input_size, design, activation_fn, mode, local_rank):
     model_temp = Network(design=design, activation_fn=activation_fn, mode=mode)
-    input = torch.randn(input_size)#.to(f'cuda:{local_rank}')
+    input = torch.randn(input_size)  # .to(f'cuda:{local_rank}')
     macs, params = profile(model_temp, inputs=(input,))
     macs, params = macs / 1000000, params / 1000000
     del model_temp
-    #print(f"MFLOPS: {macs}, MPARAMS: {params}")
-    logging.info('MFLOPS %f, MPARAMS: %f', macs, params)
+    # print(f"MFLOPS: {macs}, MPARAMS: {params}")
+    logging.info("MFLOPS %f, MPARAMS: %f", macs, params)
     torch.cuda.empty_cache()
     gc.collect()
     return macs, params
@@ -175,7 +189,7 @@ def main():
         local_rank = int(os.environ["LOCAL_RANK"])
         global_rank = int(os.environ["LOCAL_RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
-        job_id = 10001# int(os.getpid())
+        job_id = 10001  # int(os.getpid())
         ip = "127.0.0.1"
         setup_for_distributed(global_rank == 0)
     else:
@@ -252,7 +266,7 @@ def main():
         wandb_art.add_dir(os.path.join(args.save, "scripts"))
         wandb_con.log_artifact(wandb_art)
         wandb_con.config.update(args)
-        logging.info('Saving py files to wandb...')
+        logging.info("Saving py files to wandb...")
         wandb_con.save("./*.py")
         wandb_con.save("./trainval/*.py")
         wandb_con.save("./dataloader/*.py")
@@ -260,7 +274,7 @@ def main():
         wandb_con.save("./models/*.py")
         wandb_con.save("./models/ops/*.py")
         wandb_con.save("./searchables/*.py")
-        logging.info('Saved py files to wandb...')
+        logging.info("Saved py files to wandb...")
         args.wandb_con = wandb_con
     else:
         wandb_con = None
@@ -305,9 +319,11 @@ def main():
                 local_rank=args.local_rank,
             )
         rank_trainables = [False] * args.world_size
-        mem, trainable = profile_memory(args.design, activation_fn, mode, args.local_rank)
+        mem, trainable = profile_memory(
+            args.design, activation_fn, mode, args.local_rank
+        )
         if mem > 22.0:
-            print(f'Memory required {mem} greater than 22.0 GiB threshold...')
+            print(f"Memory required {mem} greater than 22.0 GiB threshold...")
             trainable = False
         rank_trainables[args.global_rank] = trainable
         rank_trainables = torch.Tensor([rank_trainables])
