@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 import torch.utils
 import torch.multiprocessing as mp
+import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 from torch.nn.parallel import DistributedDataParallel
 from thop import profile
@@ -24,6 +25,7 @@ from trainval.trainval_gpu_exact import train_x_epochs_gpu
 from dataloader.torchvision_dataloader import (
     build_torchvision_loader_gpu as build_torchvision_loader_gpu,
 )
+from dataloader.torchvision_dataloader import build_loader_timm
 from models.accelbenchnet import AccelNet as Network
 from searchables import searchables
 
@@ -37,6 +39,27 @@ from timm.utils import ModelEmaV2, NativeScaler
 warnings.filterwarnings("ignore")
 
 
+def setup_distributed(rank, local_rank, address, port, world_size, cluster):
+    os.environ["MASTER_ADDR"] = address
+    os.environ["MASTER_PORT"] = port
+    # os.environ['NCCL_IB_DISABLE'] = '1'
+    # os.environ['NCCL_SOCKET_IFNAME'] = 'eth0'
+    print("Setting up dist training rank %d" % rank)
+    if cluster == "local":
+        init_method = "file:///home/aahmadaa/newf1"
+    elif cluster == "tacc":
+        init_method = "env://"
+
+    dist.init_process_group(
+        "gloo", init_method=init_method, rank=rank, world_size=world_size
+    )
+    torch.cuda.set_device(local_rank)
+
+
+def cleanup_distributed():
+    dist.destroy_process_group()
+
+
 def profile_model(input_size, design, activation_fn, mode):
     model_temp = Network(design=design, activation_fn=activation_fn, mode=mode)
     input = torch.randn(input_size)
@@ -48,11 +71,14 @@ def profile_model(input_size, design, activation_fn, mode):
     return macs, params
 
 
-def map_fn(index, args):
-    local_rank = global_rank = args.local_rank = args.global_rank = index
+def map_fn(args):
+    local_rank = global_rank = args.local_rank = args.global_rank = 0 
     args.world_size = world_size = 1
 
     args.use_wandb = True if global_rank == 0 and args.use_wandb else False
+
+    if args.distributed:
+        setup_distributed(global_rank, local_rank, args.ip, args.port, args.world_size, 'local')
 
     args.save = "{}torchvision-trainexact-GPU-{}-{}-{}".format(
         args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M")
@@ -132,12 +158,12 @@ def map_fn(index, args):
     models_to_eval = 1
     device = torch.device(f"cuda:{args.local_rank}")
 
-    print('Building loader...')
-    train_queue, valid_queue, len_tdset = build_torchvision_loader_gpu(args)
+    # train_queue, valid_queue = build_torchvision_loader_gpu(args)
+    train_queue, valid_queue = build_loader_timm(args)
     criterion_train = LabelSmoothingCrossEntropy(smoothing=args.label_smoothing).to(device)
-    criterion_val = nn.CrossEntropyLoss().to(device=device)
+    criterion_val = nn.CrossEntropyLoss().to(device)
 
-    amp_dtype = "float16"
+    amp_dtype = torch.float16
     amp_autocast = partial(torch.autocast, device_type=device.type, dtype=amp_dtype)
     loss_scaler = NativeScaler()
 
@@ -153,7 +179,6 @@ def map_fn(index, args):
             label_smoothing=args.label_smoothing,
             num_classes=args.CLASSES,
         )
-    print('Entering loop...')
     while m < models_to_eval:
         args.model_num = m
         args.design = searchables.EffNetB0Conf()
@@ -176,7 +201,7 @@ def map_fn(index, args):
         model = model.to(device)
 
         args.opt = "rmsproptf"
-        args.lr = 0.010
+        args.lr = 0.024
         args.weight_decay = 1e-5
         args.momentum = 0.9
         args.opt_eps = 0.001
@@ -299,7 +324,8 @@ def main():
     args.job_id = job_id
     args.update_freq = 1
     flags = args
-    mp.spawn(map_fn, args=(flags,), nprocs=1, start_method="fork")
+    # mp.spawn(map_fn, args=(flags,), nprocs=1, start_method="fork")
+    map_fn(args)
     exit(0)
 
 

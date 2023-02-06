@@ -57,7 +57,7 @@ def train_epoch_gpu(
 
         batch_time.update(time.time() - b_start)
         num_updates += 1
-        if last_batch or step % report_freq == 0:
+        if last_batch or (step + 1) % report_freq == 0:
             lrl = [param_group['lr'] for param_group in optimizer.param_groups]
             lr = sum(lrl) / len(lrl)
 
@@ -70,7 +70,11 @@ def train_epoch_gpu(
             '''
             loss_val = loss.data.item()
             losses_m.update(loss_val, input.size(0))
-            print(f'Loss: {loss_val:.4f}')
+            time_elapsed = batch_time.sum / 60.
+            steps_left = num_batches_per_epoch - step
+            time_left = ((batch_time.sum / step) * steps_left) / 60.
+
+            print(f'Epoch {epoch}, Step {step}/{num_batches_per_epoch}, Loss: {loss_val:.4f}, Time Elapsed: {time_elapsed:.1f} min, Time left: {time_left:.1f} min')
         if lr_schedule is not None:
             lr_schedule.step_update(num_updates=num_updates, metric=losses_m.avg)
         del loss, logits, target
@@ -110,10 +114,10 @@ def infer_gpu(
             top1.update(prec1.data.item(), logits.size(0))
             top5.update(prec5.data.item(), logits.size(0))
 
-            if last_batch or step % report_freq == 0:
+            if last_batch or (step + 1) % report_freq == 0:
                 # xm.add_step_closure(test_utils.print_test_update, args=(args.local_rank, top1.avg, epoch, step))
                 #TODO print stats here
-                print(top1.avg, top5.avg, objs.avg)
+                print(f'Epoch {epoch}, Step {step}/{len(valid_queue)}, Top-1: {top1.avg:.5f}, Top-5: {top5.avg:.5f}, Loss: {objs.avg:.4f}')
             del loss, logits, target
         top1_acc = top1.avg
         top5_acc = top5.avg
@@ -151,13 +155,6 @@ def train_x_epochs_gpu(
 
     for epoch in range(_epochs):
         # training
-        '''
-        lr = utils.adjust_lr(optimizer, epoch, args.lr, args.epochs)
-        if epoch < 5 and args.train_batch_size > 256:
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = lr * (epoch + 1) / 5.0
-            print("Warming-up Epoch: %d, LR: %e" % (epoch, lr * (epoch + 1) / 5.0))
-        '''
         sampler.set_epoch(epoch)
         epoch_start = time.time()
         train_acc, train_obj = train_epoch_gpu(
@@ -181,7 +178,6 @@ def train_x_epochs_gpu(
             epoch, train_acc, epoch_duration
         )
         if args.global_rank == 0 and args.wandb_con is not None:
-            #commit = True if epoch <= _epochs - 4 else False
             commit = False
             args.wandb_con.log({"t_acc": train_acc, "t_loss": train_obj}, commit=commit)
         # validation
@@ -222,13 +218,11 @@ def train_x_epochs_gpu(
 
             if args.global_rank == 0:
                 print(
-                    "Epoch %d, Valid_acc_top1 %f,\
-                    Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f"
+                    "Epoch %d, Valid_acc_top1 %f, Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f"
                     % (epoch, avg_top1_val, avg_top5_val, best_acc_top1, best_acc_top5)
                 )
             logging.info(
-                "Epoch %d, Valid_acc_top1 %f,\
-                Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f",
+                "Epoch %d, Valid_acc_top1 %f, Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f",
                 epoch, avg_top1_val, avg_top5_val, best_acc_top1, best_acc_top5
             )
         lr_scheduler.step(epoch + 1, valid_acc_top1)

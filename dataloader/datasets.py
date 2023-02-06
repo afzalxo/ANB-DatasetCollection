@@ -58,6 +58,7 @@ def build_transform(is_train, args):
         transform = create_transform(
             input_size=args.input_size,
             is_training=True,
+            use_prefetcher=True,
             color_jitter=args.color_jitter,
             auto_augment=args.aa,
             interpolation=args.train_interpolation,
