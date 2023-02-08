@@ -127,7 +127,7 @@ def build_loader_timm(args):
         pin_memory=False,
         device=torch.device(f'cuda:{args.local_rank}'),
     )
-    return loader_train, loader_eval 
+    return loader_train, loader_eval, dataset_train 
 
 
 def build_torchvision_loader_tpu(args):

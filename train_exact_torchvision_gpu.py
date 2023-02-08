@@ -22,9 +22,6 @@ from thop import profile
 
 import auxiliary.utils as utils
 from trainval.trainval_gpu_exact import train_x_epochs_gpu
-from dataloader.torchvision_dataloader import (
-    build_torchvision_loader_gpu as build_torchvision_loader_gpu,
-)
 from dataloader.torchvision_dataloader import build_loader_timm
 from models.accelbenchnet import AccelNet as Network
 from searchables import searchables
@@ -75,10 +72,8 @@ def map_fn(args):
     local_rank = global_rank = args.local_rank = args.global_rank = 0 
     args.world_size = world_size = 1
 
+    device = utils.init_distributed_device(args)
     args.use_wandb = True if global_rank == 0 and args.use_wandb else False
-
-    if args.distributed:
-        setup_distributed(global_rank, local_rank, args.ip, args.port, args.world_size, 'local')
 
     args.save = "{}torchvision-trainexact-GPU-{}-{}-{}".format(
         args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M")
@@ -88,9 +83,8 @@ def map_fn(args):
         World Size {world_size}, Job ID {args.job_id}"
     )
     np.random.seed(args.seed)
-    cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = True
     torch.manual_seed(args.seed)
-    cudnn.enabled = True
     torch.cuda.manual_seed(args.seed)
     random.seed(args.seed)
     torch.set_printoptions(precision=4)
@@ -158,8 +152,7 @@ def map_fn(args):
     models_to_eval = 1
     device = torch.device(f"cuda:{args.local_rank}")
 
-    # train_queue, valid_queue = build_torchvision_loader_gpu(args)
-    train_queue, valid_queue = build_loader_timm(args)
+    train_queue, valid_queue, dataset_train = build_loader_timm(args)
     criterion_train = LabelSmoothingCrossEntropy(smoothing=args.label_smoothing).to(device)
     criterion_val = nn.CrossEntropyLoss().to(device)
 
@@ -226,13 +219,15 @@ def map_fn(args):
                 device="cpu" if args.model_ema_force_cpu else None,
             )
 
-        model = DistributedDataParallel(
-            model, device_ids=[device], broadcast_buffers=True
-        )
+        if args.distributed:
+            model = DistributedDataParallel(
+                model, device_ids=[device], broadcast_buffers=True
+            )
 
         train_acc, train_loss, valid_t1, valid_t5, valid_loss = train_x_epochs_gpu(
             args.epochs,
             lr_scheduler,
+            dataset_train,
             train_queue,
             valid_queue,
             model,
@@ -265,6 +260,7 @@ def main():
 
     parser = argparse.ArgumentParser("")
     parser.add_argument("--cfg_path")
+    parser.add_argument("--local_rank", default=0, type=int)
     args = parser.parse_args()
 
     cfg_path = args.cfg_path
@@ -296,7 +292,6 @@ def main():
     args.min_lr = config["optimizer"].getfloat("min_lr")
     args.warmup_epochs = config["optimizer"].getint("warmup_epochs")
     # distributed
-    args.distributed = config["distributed"].getboolean("distributed")
     args.cluster = config["distributed"]["cluster"]
     args.port = config["distributed"]["port"]
 
@@ -314,7 +309,7 @@ def main():
 
     args.model_ema = True
     args.model_ema_decay = 0.9999
-    args.model_ema_force_cpu = True
+    args.model_ema_force_cpu = False
 
     os.environ["XLA_USE_BF16"] = "1"
     job_id = os.getpid()

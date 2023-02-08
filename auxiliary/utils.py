@@ -8,10 +8,109 @@ from itertools import repeat
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import distributed as dist
 import shutil
 import torchvision.transforms as transforms
 import json
 
+
+def reduce_tensor(tensor, n):
+    rt = tensor.clone()
+    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
+    rt /= n
+    return rt
+
+
+def distribute_bn(model, world_size, reduce=False):
+    # ensure every node has the same running bn stats
+    for bn_name, bn_buf in unwrap_model(model).named_buffers(recurse=True):
+        if ('running_mean' in bn_name) or ('running_var' in bn_name):
+            if reduce:
+                # average bn stats across whole group
+                torch.distributed.all_reduce(bn_buf, op=dist.ReduceOp.SUM)
+                bn_buf /= float(world_size)
+            else:
+                # broadcast bn stats from rank 0 to whole group
+                torch.distributed.broadcast(bn_buf, 0)
+
+
+def is_distributed_env():
+    if 'WORLD_SIZE' in os.environ:
+        return int(os.environ['WORLD_SIZE']) > 1
+    if 'SLURM_NTASKS' in os.environ:
+        return int(os.environ['SLURM_NTASKS']) > 1
+    return False
+
+
+def world_info_from_env():
+    local_rank = 0
+    for v in ('LOCAL_RANK', 'MPI_LOCALRANKID', 'SLURM_LOCALID', 'OMPI_COMM_WORLD_LOCAL_RANK'):
+        if v in os.environ:
+            local_rank = int(os.environ[v])
+            break
+
+    global_rank = 0
+    for v in ('RANK', 'PMI_RANK', 'SLURM_PROCID', 'OMPI_COMM_WORLD_RANK'):
+        if v in os.environ:
+            global_rank = int(os.environ[v])
+            break
+
+    world_size = 1
+    for v in ('WORLD_SIZE', 'PMI_SIZE', 'SLURM_NTASKS', 'OMPI_COMM_WORLD_SIZE'):
+        if v in os.environ:
+            world_size = int(os.environ[v])
+            break
+
+    return local_rank, global_rank, world_size
+
+
+def init_distributed_device(args):
+    # Distributed training = training on more than one GPU.
+    # Works in both single and multi-node scenarios.
+    args.distributed = False
+    args.world_size = 1
+    args.rank = 0  # global rank
+    args.local_rank = 0
+
+    dist_backend = getattr(args, 'dist_backend', 'nccl')
+    dist_url = getattr(args, 'dist_url', 'env://')
+    if is_distributed_env():
+        if 'SLURM_PROCID' in os.environ:
+            # DDP via SLURM
+            args.local_rank, args.rank, args.world_size = world_info_from_env()
+            # SLURM var -> torch.distributed vars in case needed
+            os.environ['LOCAL_RANK'] = str(args.local_rank)
+            os.environ['RANK'] = str(args.rank)
+            os.environ['WORLD_SIZE'] = str(args.world_size)
+            torch.distributed.init_process_group(
+                backend=dist_backend,
+                init_method=dist_url,
+                world_size=args.world_size,
+                rank=args.rank,
+            )
+        else:
+            # DDP via torchrun, torch.distributed.launch
+            args.local_rank, _, _ = world_info_from_env()
+            torch.distributed.init_process_group(
+                backend=dist_backend,
+                init_method=dist_url,
+            )
+            args.world_size = torch.distributed.get_world_size()
+            args.rank = torch.distributed.get_rank()
+        args.distributed = True
+
+    if torch.cuda.is_available():
+        if args.distributed:
+            device = 'cuda:%d' % args.local_rank
+        else:
+            device = 'cuda:0'
+        torch.cuda.set_device(device)
+    else:
+        device = 'cpu'
+
+    args.device = device
+    device = torch.device(device)
+    return device
 
 def softmax(x, axis=0):
     e_x = np.exp(x - np.max(x))
@@ -170,104 +269,31 @@ def restore_weights2(
     return new_dict
 
 
-class AvgrageMeter(object):
+class AverageMeter(object):
     def __init__(self):
         self.reset()
 
     def reset(self):
+        self.val = 0
         self.avg = 0
         self.sum = 0
         self.cnt = 0
 
     def update(self, val, n=1):
+        self.val = val
         self.sum += val * n
         self.cnt += n
         self.avg = self.sum / self.cnt
 
 
 def accuracy(output, target, topk=(1,)):
-    maxk = max(topk)
+    """Computes the accuracy over the k top predictions for the specified values of k"""
+    maxk = min(max(topk), output.size()[1])
     batch_size = target.size(0)
-
     _, pred = output.topk(maxk, 1, True, True)
     pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-    res = []
-    for k in topk:
-        correct_k = correct[:k].flatten().float().sum(0)  # view(-1).float().sum(0)
-        res.append(correct_k.mul_(100.0 / batch_size))
-    return res
-
-
-class Cutout(object):
-    def __init__(self, length):
-        self.length = length
-
-    def __call__(self, img):
-        h, w = img.size(1), img.size(2)
-        mask = np.ones((h, w), np.float32)
-        y = np.random.randint(h)
-        x = np.random.randint(w)
-
-        y1 = np.clip(y - self.length // 2, 0, h)
-        y2 = np.clip(y + self.length // 2, 0, h)
-        x1 = np.clip(x - self.length // 2, 0, w)
-        x2 = np.clip(x + self.length // 2, 0, w)
-
-        mask[y1:y2, x1:x2] = 0.0
-        mask = torch.from_numpy(mask)
-        mask = mask.expand_as(img)
-        img *= mask
-        return img
-
-
-def _data_transforms_cifar10(args):
-    CIFAR_MEAN = [0.49139968, 0.48215827, 0.44653124]
-    CIFAR_STD = [0.24703233, 0.24348505, 0.26158768]
-
-    train_transform = transforms.Compose(
-        [
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
-        ]
-    )
-    if args.cutout:
-        train_transform.transforms.append(Cutout(args.cutout_length))
-
-    valid_transform = transforms.Compose(
-        [
-            transforms.ToTensor(),
-            transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
-        ]
-    )
-    return train_transform, valid_transform
-
-
-def _data_transforms_cifar100(args):
-    CIFAR_MEAN = [0.5071, 0.4867, 0.4408]
-    CIFAR_STD = [0.2675, 0.2565, 0.2761]
-
-    train_transform = transforms.Compose(
-        [
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
-        ]
-    )
-    if args.cutout:
-        train_transform.transforms.append(Cutout(args.cutout_length))
-
-    valid_transform = transforms.Compose(
-        [
-            transforms.ToTensor(),
-            transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
-        ]
-    )
-    return train_transform, valid_transform
+    correct = pred.eq(target.reshape(1, -1).expand_as(pred))
+    return [correct[:min(k, maxk)].reshape(-1).float().sum(0) * 100. / batch_size for k in topk]
 
 
 def count_parameters_in_MB(model):

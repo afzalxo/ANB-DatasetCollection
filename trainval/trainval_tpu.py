@@ -39,9 +39,9 @@ def train_epoch_tpu(
     args
 ):
     tracker = xm.RateTracker()
-    losses_m = utils.AvgrageMeter()
-    top1 = utils.AvgrageMeter()
-    batch_time = utils.AvgrageMeter()
+    losses_m = utils.AverageMeter()
+    top1 = utils.AverageMeter()
+    batch_time = utils.AverageMeter()
     model.train()
     num_batches_per_epoch = len(train_queue)
     last_idx = num_batches_per_epoch - 1
@@ -92,9 +92,9 @@ def infer_tpu(
     valid_queue, model, criterion, args, epoch, report_freq=100
 ):
 
-    objs = utils.AvgrageMeter()
-    top1 = utils.AvgrageMeter()
-    top5 = utils.AvgrageMeter()
+    objs = utils.AverageMeter()
+    top1 = utils.AverageMeter()
+    top5 = utils.AverageMeter()
     model.eval()
     last_idx = len(valid_queue) - 1
 
