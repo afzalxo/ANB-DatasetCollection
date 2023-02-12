@@ -134,8 +134,8 @@ def map_fn(index, args):
     device = xm.xla_device()
 
     train_queue, valid_queue, len_tdset = build_torchvision_loader_tpu(args)
-    # criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(device)
-    criterion = LabelSmoothingCrossEntropy(smoothing=args.label_smoothing)
+    criterion_train = LabelSmoothingCrossEntropy(smoothing=args.label_smoothing).to(device)
+    criterion_val = torch.nn.CrossEntropyLoss().to(device)
     args.writer = None
     if xm.is_master_ordinal():
         import torch_xla.test.test_utils as test_utils
@@ -280,9 +280,9 @@ def main():
     args.cutmix = 1
     args.cutmix_minmax = None
 
-    args.model_ema = False
+    args.model_ema = True
     args.model_ema_decay = 0.9999
-    args.model_ema_force_cpu = True
+    args.model_ema_force_cpu = False
 
     os.environ["XLA_USE_BF16"] = "1"
     job_id = os.getpid()

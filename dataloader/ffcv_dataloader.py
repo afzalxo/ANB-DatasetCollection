@@ -2,28 +2,23 @@ from typing import List
 
 from ffcv.transforms import Squeeze, NormalizeImage
 
-# from ffcv.transforms.common import Squeeze
 from ffcv.fields.rgb_image import (
     CenterCropRGBImageDecoder,
     RandomResizedCropRGBImageDecoder,
 )
 from ffcv.transforms import (
     RandomHorizontalFlip,
-    Cutout,
-    RandomTranslate,
-    Convert,
     ToDevice,
     ToTensor,
     ToTorchImage,
 )
 from ffcv.pipeline.operation import Operation
 
-from ffcv.fields.decoders import IntDecoder, SimpleRGBImageDecoder
+from ffcv.fields.decoders import IntDecoder
 from ffcv.loader import Loader, OrderOption
 from pathlib import Path
 import torch
 import numpy as np
-import torchvision
 
 
 class ImageNetDataLoaders:
@@ -35,17 +30,14 @@ class ImageNetDataLoaders:
         self.decoder = None
         self.args = args
 
-    def create_train_loader(self, train_path, batch_size):
+    def create_train_loader(self, train_path, batch_size, indices=None):
         this_device = f"cuda:{self.gpu}"
         train_loc = Path(train_path)
         assert train_loc.is_file()
 
-        res = (
-            self.args.min_res
-        )  # self.args.input_size #get_resolution(0, self.args.min_res, self.args.max_res, self.args.end_ramp, self.args.start_ramp)
+        res = self.args.min_res
         scale = tuple((0.08, 1.0))
         ratio = tuple((3.0 / 4.0, 4.0 / 3.0))
-        # self.rr = RandomResizedCropAndInterpolation(res, scale=scale, ratio=ratio, interpolation='bicubic')
         self.decoder = RandomResizedCropRGBImageDecoder(
             output_size=(res, res), scale=scale, ratio=ratio
         )
@@ -78,8 +70,17 @@ class ImageNetDataLoaders:
             pipelines={"image": image_pipeline, "label": label_pipeline},
             distributed=self.distributed,
             seed=0,
+            indices=indices,
         )
         return trainloader
+
+    def create_few_train_loader(self, train_path, batch_size, portion_dset):
+        import random
+
+        num_train_total = 1281167
+        num_train = int(portion_dset * num_train_total)
+        indices_train = random.sample(list(range(num_train_total)), num_train)
+        return self.create_train_loader(train_path, batch_size, indices=indices_train)
 
     def create_val_loader(self, val_path, batch_size, resolution):
         this_device = f"cuda:{self.gpu}"
@@ -132,69 +133,6 @@ def get_resolution(epoch, min_res, max_res, end_ramp, start_ramp):
     return final_res
 
 
-class CIFAR10DataLoaders:
-    def __init__(self, gpu, num_workers, distributed, in_memory, args):
-        self.num_workers = num_workers
-        self.distributed = distributed
-        self.in_memory = in_memory
-        self.gpu = gpu
-        self.decoder = None
-        self.args = args
-
-    def get_loaders(self, train_path, batch_size=512):
-        this_device = f"cuda:{self.gpu}"
-        CIFAR_MEAN = [125.307, 122.961, 113.8575]
-        CIFAR_STD = [51.5865, 50.847, 51.255]
-
-        BATCH_SIZE = batch_size
-
-        loaders = {}
-        for name in ["train", "test"]:
-            label_pipeline: List[Operation] = [
-                IntDecoder(),
-                ToTensor(),
-                ToDevice(torch.device(this_device), non_blocking=True),
-                Squeeze(),
-            ]
-            image_pipeline: List[Operation] = [SimpleRGBImageDecoder()]
-
-            # Add image transforms and normalization
-            if name == "train":
-                image_pipeline.extend(
-                    [
-                        RandomHorizontalFlip(),
-                        RandomTranslate(padding=2),
-                        Cutout(
-                            8, tuple(map(int, CIFAR_MEAN))
-                        ),  # Note Cutout is done before normalization.
-                    ]
-                )
-            image_pipeline.extend(
-                [
-                    ToTensor(),
-                    ToDevice(torch.device(this_device), non_blocking=True),
-                    # ToDevice('cuda:0', non_blocking=True),
-                    ToTorchImage(),
-                    Convert(torch.float16),
-                    torchvision.transforms.Normalize(CIFAR_MEAN, CIFAR_STD),
-                ]
-            )
-
-            # Create loaders
-            bs = BATCH_SIZE if name == "train" else BATCH_SIZE * 12
-            loaders[name] = Loader(
-                train_path + f"/cifar_{name}.beton",
-                batch_size=bs,
-                num_workers=8,
-                order=OrderOption.RANDOM,
-                drop_last=(name == "train"),
-                distributed=self.distributed,
-                seed=0,
-                pipelines={"image": image_pipeline, "label": label_pipeline},
-            )
-        return loaders
-
-
 def get_ffcv_loaders(local_rank, args):
     dl = ImageNetDataLoaders(
         gpu=local_rank,
@@ -204,7 +142,11 @@ def get_ffcv_loaders(local_rank, args):
         args=args,
     )
     train_queue, valid_queue = None, None
-    if hasattr(args, "train_dataset"):
+    if hasattr(args, "train_dataset") and hasattr(args, "train_portion"):
+        train_queue = dl.create_few_train_loader(
+            args.train_dataset, args.train_batch_size, args.train_portion
+        )
+    elif hasattr(args, "train_dataset"):
         train_queue = dl.create_train_loader(
             train_path=args.train_dataset, batch_size=args.train_batch_size
         )

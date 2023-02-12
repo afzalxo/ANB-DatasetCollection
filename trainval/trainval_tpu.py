@@ -19,7 +19,7 @@ def _train_update(device, step, loss, tracker, epoch, writer):
     test_utils.print_training_update(
       device,
       step,
-      loss, # .item(),
+      loss,
       tracker.rate(),
       tracker.global_rate(),
       epoch,

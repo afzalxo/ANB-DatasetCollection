@@ -26,14 +26,14 @@ def train(
     lr_peak_epoch,
     epochs,
     argslr,
-    args
+    args,
 ):
     from torch.cuda.amp import autocast
 
-    objs = utils.AvgrageMeter()
-    top1 = utils.AvgrageMeter()
-    top5 = utils.AvgrageMeter()
-    batch_time = utils.AvgrageMeter()
+    objs = utils.AverageMeter()
+    top1 = utils.AverageMeter()
+    top5 = utils.AverageMeter()
+    batch_time = utils.AverageMeter()
     model.train()
     lr_start, lr_end = utils.get_cyclic_lr(
         epoch, argslr, epochs, lr_peak_epoch
@@ -62,14 +62,13 @@ def train(
                 scaler.step(optimizer)
                 scaler.update()
             except RuntimeError:
-                print(f'Rank {args.local_rank} ran out of GPU memory...')
+                print(f"Rank {args.local_rank} ran out of GPU memory...")
                 rank_finished[args.local_rank] = 1
-                #return 0, 0, None
-        if step % report_freq == 0:
-            dist.barrier()
-            # dist.broadcast(rank0_finished, src=0, async_op=False)
-            dist.all_reduce(rank_finished, op=dist.ReduceOp.SUM)
-            dist.barrier()
+                # return 0, 0, None
+        # if step % report_freq == 0:
+        #    dist.barrier()
+        #    dist.all_reduce(rank_finished, op=dist.ReduceOp.SUM)
+        #    dist.barrier()
         if any(rank_finished):
             # This conditional ensures that when one GPU runs out of memory, remaining GPUs abandon training
             continue
@@ -105,13 +104,11 @@ def train(
     return top1.avg.data.item(), objs.avg.data.item(), scaler
 
 
-def infer(
-    valid_queue, model, criterion, args, report_freq=100, lr_tta=True, fast=False
-):
+def infer(valid_queue, model, criterion, args, report_freq=100, fast=False):
 
-    objs = utils.AvgrageMeter()
-    top1 = utils.AvgrageMeter()
-    top5 = utils.AvgrageMeter()
+    objs = utils.AverageMeter()
+    top1 = utils.AverageMeter()
+    top5 = utils.AverageMeter()
     model.eval()
 
     from torch.cuda.amp import autocast
@@ -121,8 +118,6 @@ def infer(
             for step, (input, target) in enumerate(valid_queue):
                 try:
                     logits = model(input.contiguous(memory_format=torch.channels_last))
-                    # if lr_tta:
-                    #    logits += model(torch.flip(input, dims=[3]).contiguous(memory_format=torch.channels_last))
                     loss = criterion(logits, target)
 
                     prec1, prec5 = utils.accuracy(logits, target, topk=(1, 5))
@@ -252,22 +247,20 @@ def train_x_epochs(
         # logging.info('Train_acc %f', train_acc)
         epoch_duration = time.time() - epoch_start
         logging.info(
-            "Epoch %d, Train_acc %f, Epoch time: %ds",
-            epoch, train_acc, epoch_duration
+            "Epoch %d, Train_acc %f, Epoch time: %ds", epoch, train_acc, epoch_duration
         )
         if global_rank == 0:
             if wandb_con is not None:
                 commit = True if epoch <= _epochs - 4 else False
                 wandb_con.log({"t_acc": train_acc, "t_loss": train_obj}, commit=commit)
         # validation
-        if epoch > _epochs - 4:
+        if epoch == _epochs - 1:
             valid_acc_top1, valid_acc_top5, valid_obj = infer(
                 valid_queue,
                 model,
                 criterion,
                 args,
                 args.report_freq,
-                args.lr_tta,
                 args.fast,
             )
             if valid_acc_top1 == 0 and valid_acc_top5 == 0:
@@ -286,23 +279,29 @@ def train_x_epochs(
                     commit=commit,
                 )
                 if epoch == _epochs - 1:
-                    wandb_con.log({'Train Time': time.time() - train_sttime}, commit=True)
+                    wandb_con.log(
+                        {"Train Time": time.time() - train_sttime}, commit=True
+                    )
             if avg_top5_val > best_acc_top5:
                 best_acc_top5 = avg_top5_val
             if avg_top1_val > best_acc_top1:
                 best_acc_top1 = avg_top1_val
-            '''
+            """
             if global_rank == 0:
                 print(
                     "Epoch %d, Valid_acc_top1 %f,\
                     Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f"
                     % (epoch, avg_top1_val, avg_top5_val, best_acc_top1, best_acc_top5)
                 )
-            '''
+            """
             logging.info(
                 "Epoch %d, Valid_acc_top1 %f,\
                 Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f",
-                epoch, avg_top1_val, avg_top5_val, best_acc_top1, best_acc_top5
+                epoch,
+                avg_top1_val,
+                avg_top5_val,
+                best_acc_top1,
+                best_acc_top5,
             )
         if args.distributed:
             dist.barrier()
@@ -341,16 +340,34 @@ def train_x_epochs(
             },
             args.save,
         )
+        train_recipe = {
+            "epochs": args.epochs,
+            "batch_size": args.train_batch_size,
+            "min_res": args.min_res,
+            "max_res": args.max_res,
+            "start_ramp": args.start_ramp,
+            "end_ramp": args.end_ramp,
+            "train_portion": args.train_portion,
+        }
+        artifact_dict = {
+            "key": args.model_num,
+            "macs": args.macs,
+            "params": args.params,
+            "train_recipe": train_recipe,
+            "acc": best_acc_top1,
+            "train_time": train_endtime - train_sttime,
+        }
         if args.use_wandb and wandb_con is not None:
             import wandb
 
             wandb_art = wandb.Artifact(
-                name=f"models-random-jobid{args.job_id}-model{args.model_num}",
-                # name=f"models-search-try162-{args.search_algo}-{args.arch_epoch}-{args.episode}",
+                # name=f"models-grid-proxified-jobid{args.job_id}-model{args.model_num}",
+                name=f"models-searchrecipe-jobid{args.job_id}-{args.arch_epoch}-{args.episode}",
                 type="model",
                 metadata={
                     "training_config": training_config_dict,
                     "model_metadata": model_metadata_dict,
+                    "grid_eval_dict": artifact_dict
                 },
             )
             wandb_art.add_file(f"{args.save}/f_model.pth")
@@ -361,12 +378,10 @@ def train_x_epochs(
     return [train_acc, train_obj, avg_top1_val, avg_top5_val, valid_obj, True]
 
 
-def infer_tv(
-    valid_queue, model, criterion, args, report_freq=100, lr_tta=True, fast=False
-):
-    objs = utils.AvgrageMeter()
-    top1 = utils.AvgrageMeter()
-    top5 = utils.AvgrageMeter()
+def infer_tv(valid_queue, model, criterion, args, report_freq=100, fast=False):
+    objs = utils.AverageMeter()
+    top1 = utils.AverageMeter()
+    top5 = utils.AverageMeter()
     model.eval()
     with torch.no_grad():
         for step, (input, target) in enumerate(valid_queue):
@@ -374,13 +389,6 @@ def infer_tv(
                 break
             input, target = input.to(args.local_rank), target.to(args.local_rank)
             logits = model(input.contiguous(memory_format=torch.channels_last))
-            if lr_tta:
-                sss = model(
-                    torch.flip(input, dims=[3]).contiguous(
-                        memory_format=torch.channels_last
-                    )
-                )
-                logits += sss
             if criterion is not None:
                 loss = criterion(logits, target)
             else:
@@ -446,7 +454,8 @@ def infer_tv(
 def dry_run(design, platform, mode, criterion, args):
     from dataloader.ffcv_dataloader import get_ffcv_loaders
     from torch.cuda.amp import GradScaler
-    logging.info('Performing dry run on design with peak resolution...')
+
+    logging.info("Performing dry run on design with peak resolution...")
     scaler = GradScaler()
     train_queue, valid_queue, dl = get_ffcv_loaders(args.local_rank, args)
     dl.decoder.output_size = (args.max_res, args.max_res)
@@ -478,7 +487,7 @@ def dry_run(design, platform, mode, criterion, args):
     )
     del train_queue, valid_queue, dl, model, optimizer, scheduler
     if success:
-        logging.info('Design trainable...')
+        logging.info("Design trainable...")
     torch.cuda.empty_cache()
     gc.collect()
     return success
@@ -491,33 +500,37 @@ def throughput_gpu(valid_queue, model, args, report_freq=100):
     total_time = 0
     rep_time = 0
     prev_rep_time = 0
-    print(f'Warming up for {warmup_reps} repetitions and then averaging {measurement_reps} repetitions for measurements...')
+    print(
+        f"Warming up for {warmup_reps} repetitions and then averaging {measurement_reps} repetitions for measurements..."
+    )
     throughput_measurements = []
     with torch.no_grad():
         with autocast():
-            for rep in range(warmup_reps+measurement_reps):
+            for rep in range(warmup_reps + measurement_reps):
                 for step, (input, target) in enumerate(valid_queue):
-                    starter, ender = torch.cuda.Event(enable_timing=True, blocking=True), torch.cuda.Event(enable_timing=True, blocking=True)
+                    starter, ender = torch.cuda.Event(
+                        enable_timing=True, blocking=True
+                    ), torch.cuda.Event(enable_timing=True, blocking=True)
                     starter.record()
                     _ = model(input.contiguous(memory_format=torch.channels_last))
                     ender.record()
                     torch.cuda.synchronize()
-                    total_time += starter.elapsed_time(ender)/1000
+                    total_time += starter.elapsed_time(ender) / 1000
                 rep_time = total_time - prev_rep_time
                 prev_rep_time = total_time
-                throughput = (len(valid_queue)*args.val_batch_size)/rep_time
-                rep_type = 'WARMUP' if rep < warmup_reps else 'MEASUREMENT'
-                print(f'Rep {rep}:[{rep_type}] Throughput: {throughput}')
+                throughput = (len(valid_queue) * args.val_batch_size) / rep_time
+                rep_type = "WARMUP" if rep < warmup_reps else "MEASUREMENT"
+                print(f"Rep {rep}:[{rep_type}] Throughput: {throughput}")
                 if rep >= warmup_reps:
                     throughput_measurements.append(throughput)
     mean_thr = np.mean(throughput_measurements)
     std_thr = np.std(throughput_measurements)
     # throughput = (warmup_reps*len(valid_queue)*args.val_batch_size)/total_time
-    print('==='*10)
-    print(f'Mean: {mean_thr}, Std: {std_thr}')
-    print('==='*10)
+    print("===" * 10)
+    print(f"Mean: {mean_thr}, Std: {std_thr}")
+    print("===" * 10)
 
-    '''
+    """
     valid_queue.batch_size = 1
     print(f'Measuring latency at batch size {valid_queue.batch_size}, Num Samples {len(valid_queue)}...')
     num_samp = 10000
@@ -539,5 +552,5 @@ def throughput_gpu(valid_queue, model, args, report_freq=100):
     print('==='*10)
     print(mean_syn, std_syn)
     print('==='*10)
-    '''
+    """
     return mean_thr, std_thr

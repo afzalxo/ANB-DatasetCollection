@@ -2,7 +2,6 @@ import os
 import sys
 import subprocess
 import time
-import datetime
 import glob
 import numpy as np
 import torch
@@ -17,6 +16,7 @@ from torch.cuda.amp import autocast
 import random
 import warnings
 from thop import profile
+import pickle
 
 import auxiliary.utils as utils
 from trainval.trainval import train_x_epochs
@@ -259,7 +259,7 @@ def main():
             name=args.note + f"_{args.job_id}",
             settings=wandb.Settings(code_dir="."),
             dir=wandb_metadata_dir,
-            group="ablations-mulseed",
+            group="train_models_grid_exact",
         )
         wandb_art = wandb.Artifact(name=f"train-code-jobid{job_id}", type="code")
         wandb_art.add_dir(os.path.join(args.save, "scripts"))
@@ -288,15 +288,23 @@ def main():
     args.in_memory = True
     train_success = True
     last_seed = False
+    keys_to_eval = [15]
+    designs = []
+    with open('models_grid_abs.tor', 'rb') as file:
+        data = pickle.load(file)
+    arch_dict = data['arch_dict']
+    for key, value in arch_dict.items():
+        if key in keys_to_eval:
+            designs.append(value[0])
     m = 0
-    models_to_eval = 16
-    seeds_to_eval = [1, 2, 3]
+    # models_to_eval = 16
+    seeds_to_eval = [1]
 
     train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
     criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
         f"cuda:{local_rank}"
     )
-    designs = searchables.NRandomSearchables(models_to_eval, args.seed)
+    # designs = searchables.NRandomSearchables(models_to_eval, args.seed)
     for design in designs:
         last_seed = False
         for seed in seeds_to_eval:
@@ -321,7 +329,7 @@ def main():
                 args.seed,
                 np.array(args.design),
             )
-            activation_fn, mode = "relu", "train"
+            activation_fn, mode = "silu", "train"
             args.macs, args.params = None, None
             if args.global_rank == 0:
                 args.macs, args.params = profile_model(

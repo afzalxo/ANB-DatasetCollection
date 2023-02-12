@@ -2,7 +2,6 @@ import os
 import sys
 import subprocess
 import time
-import datetime
 import glob
 import numpy as np
 import torch
@@ -20,7 +19,6 @@ from thop import profile
 
 import auxiliary.utils as utils
 from trainval.trainval import train_x_epochs
-from trainval.trainval import dry_run
 from dataloader.ffcv_dataloader import get_ffcv_loaders
 from auxiliary.utils import CrossEntropyLabelSmooth
 from auxiliary.utils import create_optimizer
@@ -131,6 +129,12 @@ def main():
 
     parser = argparse.ArgumentParser("")
     parser.add_argument("--cfg_path")
+    parser.add_argument("--epochs", type=int, optional=True)
+    parser.add_argument("--train_batch_size", type=int, optional=True)
+    parser.add_argument("--min_res", type=int, optional=True)
+    parser.add_argument("--max_res", type=int, optional=True)
+    parser.add_argument("--start_ramp", type=int, optional=True)
+    parser.add_argument("--end_ramp", type=int, optional=True)
     args = parser.parse_args()
 
     cfg_path = args.cfg_path
@@ -153,15 +157,20 @@ def main():
     args.num_workers = config["dataloader"].getint("num_workers")
     args.in_memory = config["dataloader"].getboolean("in_memory")
     # trainval
-    args.epochs = config["trainval"].getint("epochs")
-    args.train_batch_size = config["trainval"].getint("train_batch_size")
+    if not hasattr(args, "epochs"):
+        args.epochs = config["trainval"].getint("epochs")
+    if not hasattr(args, "train_batch_size"):
+        args.train_batch_size = config["trainval"].getint("train_batch_size")
     args.val_batch_size = config["trainval"].getint("val_batch_size")
     args.val_resolution = config["trainval"].getint("val_resolution")
-    args.lr_tta = config["trainval"].getboolean("lr_tta")
-    args.min_res = config["trainval"].getint("min_res")
-    args.max_res = config["trainval"].getint("max_res")
-    args.start_ramp = config["trainval"].getint("start_ramp")
-    args.end_ramp = config["trainval"].getint("end_ramp")
+    if not hasattr(args, "min_res"):
+        args.min_res = config["trainval"].getint("min_res")
+    if not hasattr(args, "max_res"):
+        args.max_res = config["trainval"].getint("max_res")
+    if not hasattr(args, "start_ramp"):
+        args.start_ramp = config["trainval"].getint("start_ramp")
+    if not hasattr(args, "end_ramp"):
+        args.end_ramp = config["trainval"].getint("end_ramp")
     args.seed = config["trainval"].getint("seed")
     # optimizer
     args.lr = config["optimizer"].getfloat("lr")
@@ -205,10 +214,10 @@ def main():
     args.ip = ip
     args.job_id = job_id
 
-    args.use_wandb = True if global_rank == 0 else False
+    args.use_wandb = True if global_rank == 0 and args.use_wandb else False
 
     args.save = "{}exp-{}-{}-{}".format(
-        args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M%S")
+        args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M")
     )
     print(
         f"Global Rank {global_rank}, Local Rank {local_rank},\

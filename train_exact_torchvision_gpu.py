@@ -69,7 +69,7 @@ def profile_model(input_size, design, activation_fn, mode):
 
 
 def map_fn(args):
-    local_rank = global_rank = args.local_rank = args.global_rank = 0 
+    local_rank = global_rank = args.local_rank = args.global_rank = 0
     args.world_size = world_size = 1
 
     device = utils.init_distributed_device(args)
