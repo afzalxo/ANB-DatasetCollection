@@ -129,12 +129,6 @@ def main():
 
     parser = argparse.ArgumentParser("")
     parser.add_argument("--cfg_path")
-    parser.add_argument("--epochs", type=int, optional=True)
-    parser.add_argument("--train_batch_size", type=int, optional=True)
-    parser.add_argument("--min_res", type=int, optional=True)
-    parser.add_argument("--max_res", type=int, optional=True)
-    parser.add_argument("--start_ramp", type=int, optional=True)
-    parser.add_argument("--end_ramp", type=int, optional=True)
     args = parser.parse_args()
 
     cfg_path = args.cfg_path
@@ -260,7 +254,6 @@ def main():
     if args.use_wandb and global_rank == 0:
         wandb_metadata_dir = args.save
         import wandb
-
         os.environ["WANDB_API_KEY"] = "166a45fa2ad2b2db9ec555119b273a3a9bdacc41"
         os.environ["WANDB_ENTITY"] = "europa1610"
         os.environ["WANDB_PROJECT"] = "NASBenchFPGA"
@@ -298,7 +291,7 @@ def main():
     args.in_memory = True
     train_success = True
     m = 0
-    models_to_eval = 200
+    models_to_eval = 1
 
     train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
     criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
@@ -309,8 +302,8 @@ def main():
         if args.distributed:
             dist.barrier()
         args.design = (
-            searchables.RandomSearchable()
-        )  # EfficientNetB0Conf(d=1)#.RandomSearchable()
+            searchables.EfficientNetB0Conf()
+        )  # .RandomSearchable()
         logging.info(
             "Job ID: %d, Model Number: %d, Design: \n%s",
             args.job_id,
