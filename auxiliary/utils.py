@@ -13,6 +13,12 @@ import shutil
 import torchvision.transforms as transforms
 import json
 
+from timm.utils.model import unwrap_model
+
+try:
+    import torch_xla.core.xla_model as xm
+except ImportError:
+    xm = None
 
 def reduce_tensor(tensor, n):
     rt = tensor.clone()
@@ -32,6 +38,22 @@ def distribute_bn(model, world_size, reduce=False):
             else:
                 # broadcast bn stats from rank 0 to whole group
                 torch.distributed.broadcast(bn_buf, 0)
+
+
+def reduce_xla_tensor(tens, world_size):
+    clone = tens.clone()
+    clone = xm.all_reduce(xm.REDUCE_SUM, clone)
+    reduced = clone / world_size
+    return reduced
+
+
+def distribute_bn_tpu(model, world_size, reduce=True):
+    for bn_name, bn_buf in unwrap_model(model).named_buffers(recurse=True):
+        if ('running_mean' in bn_name) or ('running_var' in bn_name):
+            if reduce:
+                bn_buf = reduce_xla_tensor(bn_buf, world_size)
+            else:
+                raise NotImplementedError
 
 
 def is_distributed_env():

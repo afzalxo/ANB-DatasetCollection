@@ -4,6 +4,7 @@ import torch
 import numpy as np
 import logging
 
+from contextlib import suppress
 import itertools
 import torch.distributed as dist
 import torch_xla.core.xla_model as xm
@@ -46,7 +47,7 @@ def train_epoch_tpu(
     num_batches_per_epoch = len(train_queue)
     last_idx = num_batches_per_epoch - 1
     num_updates = epoch * num_batches_per_epoch
-
+    optimizer.zero_grad()
     for step, (input, target) in enumerate(train_queue):
         b_start = time.time()
         last_batch = step == last_idx
@@ -57,6 +58,9 @@ def train_epoch_tpu(
         optimizer.zero_grad()
         loss.backward()
         xm.optimizer_step(optimizer)
+        # xm.reduce_gradients(optimizer)
+        # optimizer.step()
+        # xm.mark_step()
 
         if model_ema is not None:
             model_ema.update(model)
@@ -84,7 +88,7 @@ def train_epoch_tpu(
 
 def reduce_xla_tensor(tens, world_size):
     clone = tens.clone()
-    xm.all_reduce(xm.REDUCE_SUM, clone)
+    clone = xm.all_reduce(xm.REDUCE_SUM, clone)
     reduced = clone / world_size
     return reduced
 
@@ -133,7 +137,8 @@ def train_x_epochs_tpu(
     valid_queue,
     model,
     model_ema,
-    criterion,
+    criterion_train,
+    criterion_val,
     optimizer,
     mixup_fn,
     args,
@@ -150,13 +155,6 @@ def train_x_epochs_tpu(
 
     for epoch in range(_epochs):
         # training
-        '''
-        lr = utils.adjust_lr(optimizer, epoch, args.lr, args.epochs)
-        if epoch < 5 and args.train_batch_size > 256:
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = lr * (epoch + 1) / 5.0
-            print("Warming-up Epoch: %d, LR: %e" % (epoch, lr * (epoch + 1) / 5.0))
-        '''
         sampler.set_epoch(epoch)
         epoch_start = time.time()
         train_acc, train_obj = train_epoch_tpu(
@@ -164,7 +162,7 @@ def train_x_epochs_tpu(
             train_queue,
             model,
             model_ema,
-            criterion,
+            criterion_train,
             optimizer,
             lr_scheduler,
             mixup_fn,
@@ -181,17 +179,32 @@ def train_x_epochs_tpu(
             #commit = True if epoch <= _epochs - 4 else False
             commit = False
             args.wandb_con.log({"t_acc": train_acc, "t_loss": train_obj}, commit=commit)
+        # Distrubute bn mean and vars
+        utils.distribute_bn_tpu(model, args.world_size, reduce=True)
+
         # validation
         if epoch > -1:
             valid_acc_top1, valid_acc_top5, valid_obj = infer_tpu(
                 valid_queue,
                 model,
-                criterion,
+                criterion_val,
                 args,
                 epoch,
                 args.report_freq,
             )
             avg_top1_val, avg_top5_val = valid_acc_top1, valid_acc_top5
+
+            # Distribute batchnorm here
+            if model_ema is not None and not args.model_ema_force_cpu:
+                utils.distribute_bn_tpu(model_ema, args.world_size, reduce=True)
+                avg_top1_val_ema, avg_top5_val_ema, valid_obj_ema = infer_tpu(
+                        valid_queue,
+                        model_ema.module,
+                        criterion_val,
+                        args,
+                        epoch,
+                        args.report_freq,
+                    )
 
             if args.global_rank == 0 and args.wandb_con is not None:
                 #commit = True if epoch < _epochs - 1 else False
@@ -210,12 +223,13 @@ def train_x_epochs_tpu(
             if avg_top1_val > best_acc_top1:
                 best_acc_top1 = avg_top1_val
                 best_model_sd = model.state_dict()
-                utils.save_checkpoint(
-                {
-                    "state_dict": best_model_sd,
-                },
-                args.save,
-                )
+                if args.global_rank == 0:
+                    utils.save_checkpoint(
+                    {
+                        "state_dict": best_model_sd,
+                    },
+                    args.save,
+                    )
 
             if args.global_rank == 0:
                 print(

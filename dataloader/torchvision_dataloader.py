@@ -4,7 +4,6 @@ import numpy as np
 from torchvision import datasets, transforms
 from torch.utils.data import Subset
 from timm.data import constants
-from timm.data import create_dataset, create_loader 
 
 
 def build_torchvision_loader(args, is_train=False):
@@ -42,6 +41,7 @@ def build_torchvision_loader(args, is_train=False):
 
 
 def build_loader_timm(args):
+    from timm.data import create_dataset, create_loader 
     args.input_size = 224
     args.imagenet_default_mean_and_std = True
     args.train_interpolation = "bicubic"
@@ -130,6 +130,107 @@ def build_loader_timm(args):
     return loader_train, loader_eval, dataset_train 
 
 
+def build_loader_timm_tpu(args):
+    from timm.data import create_dataset, PreprocessCfg, AugCfg, create_loader_v2
+    args.input_size = 224
+    args.imagenet_default_mean_and_std = True
+    args.train_interpolation = "bicubic"
+    args.reprob = 0.20
+    args.remode = "pixel"
+    args.recount = 1
+    args.resplit = False
+    # args.aa = "rand-m9-mstd0.5-inc1"
+    args.aa = "rand-m9-mstd0.5"
+    args.scale = [0.08, 1.0]
+    args.ratio = [3. / 4., 4. / 3.]
+    args.color_jitter = None# 0.4
+    args.hflip = 0.5
+    args.vflip = 0.0
+    args.aug_repeats = 0
+    args.aug_splits = 0
+    train_interpolation = 'random'
+    collate_fn = None
+    args.prefetcher=True
+    dataset_train = create_dataset(
+        'imagefolder',
+        root=args.train_dataset,
+        split='train',
+        is_training=True,
+        class_map='',
+        download=False,
+        batch_size=args.train_batch_size,
+        # seed=args.seed,
+        repeats=0,
+    )
+    dataset_eval = create_dataset(
+        'imagefolder',
+        root=args.train_dataset,
+        split='validation',
+        is_training=False,
+        class_map='',
+        download=False,
+        batch_size=args.val_batch_size,
+    )
+    data_config = {'input_size': (3,224,224),
+                    'mean': constants.IMAGENET_DEFAULT_MEAN,
+                    'std': constants.IMAGENET_DEFAULT_STD,
+                    'crop_pct': constants.DEFAULT_CROP_PCT,
+                    'interpolation': 'bicubic',
+                    }
+    train_aug_cfg = AugCfg(
+            re_prob=args.reprob,
+            re_mode=args.remode,
+            re_count=args.recount,
+            ratio_range=args.ratio,
+            scale_range=args.scale,
+            hflip_prob=args.hflip,
+            vflip_prob=args.vflip,
+            color_jitter=args.color_jitter,
+            auto_augment=args.aa,
+            num_aug_splits=args.aug_splits,
+        )
+    train_pp_cfg = PreprocessCfg(
+        input_size=data_config['input_size'],
+        interpolation='random',
+        crop_pct=data_config['crop_pct'],
+        mean=data_config['mean'],
+        std=data_config['std'],
+        aug=train_aug_cfg,
+    )
+    normalize_in_transform = args.reprob > 0
+    loader_train = create_loader_v2(
+        dataset_train,
+        batch_size=args.train_batch_size,
+        is_training=True,
+        pp_cfg=train_pp_cfg,
+        mix_cfg=None,
+        normalize_in_transform=normalize_in_transform,
+        num_workers=args.num_workers,
+        pin_memory=False,
+        use_multi_epochs_loader=False
+    )
+
+    eval_pp_cfg = PreprocessCfg(
+        input_size=data_config['input_size'],
+        interpolation=data_config['interpolation'],
+        crop_pct=data_config['crop_pct'],
+        mean=data_config['mean'],
+        std=data_config['std'],
+    )
+    print(train_pp_cfg)
+    print(eval_pp_cfg)
+    loader_eval = create_loader_v2(
+        dataset_eval,
+        batch_size=args.val_batch_size,
+        is_training=False,
+        pp_cfg=eval_pp_cfg,
+        normalize_in_transform=normalize_in_transform,
+        num_workers=args.num_workers,
+        pin_memory=False,
+    )
+    return loader_train, loader_eval
+
+
 def build_torchvision_loader_tpu(args):
     import torch_xla.core.xla_model as xm
     from dataloader.datasets import build_transform
@@ -140,8 +241,8 @@ def build_torchvision_loader_tpu(args):
     args.reprob = 0.20
     args.remode = "pixel"
     args.recount = 1
-    args.aa = "rand-m9-mstd0.5-inc1"
-    # args.aa = "rand-m9-mstd0.5"
+    # args.aa = "rand-m9-mstd0.5-inc1"
+    args.aa = "rand-m9-mstd0.5"
     args.color_jitter = 0.4
     args.crop_pct = None  # 224 / 256
 
@@ -165,10 +266,10 @@ def build_torchvision_loader_tpu(args):
     train_dataset = datasets.ImageFolder(root, transform=train_transforms)
     root = os.path.join(args.train_dataset, "val")
     test_dataset = datasets.ImageFolder(root, transform=val_transforms)
-    sub_idx = list(range(57600))
-    train_dataset = Subset(train_dataset, sub_idx)
-    train_sampler, test_sampler = None, None
-    len_tdset = len(train_dataset)
+    # sub_idx = list(range(57600))
+    # train_dataset = Subset(train_dataset, sub_idx)
+    # train_sampler, test_sampler = None, None
+    # len_tdset = len(train_dataset)
     if xm.xrt_world_size() > 1:
         train_sampler = torch.utils.data.distributed.DistributedSampler(
             train_dataset,
@@ -197,7 +298,7 @@ def build_torchvision_loader_tpu(args):
         num_workers=args.num_workers,
     )
 
-    return train_loader, test_loader, len_tdset
+    return train_loader, test_loader #, len_tdset
 
 
 def build_torchvision_loader_gpu(args):

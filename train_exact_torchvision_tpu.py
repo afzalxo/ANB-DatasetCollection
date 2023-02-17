@@ -18,21 +18,18 @@ import torch_xla
 import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 
-
 import auxiliary.utils as utils
 from trainval.trainval_tpu import train_x_epochs_tpu
-from dataloader.torchvision_dataloader import (
-    build_torchvision_loader_tpu_improved as build_torchvision_loader_tpu,
-)
-from auxiliary.utils import CrossEntropyLabelSmooth
+from dataloader.torchvision_dataloader import build_loader_timm_tpu, build_torchvision_loader_tpu
 from models.accelbenchnet import AccelNet as Network
 from searchables import searchables
 
 from timm.data.mixup import Mixup
 from timm.loss import LabelSmoothingCrossEntropy
 from timm.optim import create_optimizer_v2, optimizer_kwargs
-from timm.scheduler import create_scheduler_v2, scheduler_kwargs
-from timm.utils import ModelEmaV2
+from timm.scheduler import create_scheduler#, scheduler_kwargs
+from timm.utils import ModelEmaV2, random_seed
+from timm.bits import initialize_device
 
 
 warnings.filterwarnings("ignore")
@@ -50,12 +47,13 @@ def profile_model(input_size, design, activation_fn, mode):
 
 
 def map_fn(index, args):
-    local_rank = global_rank = args.local_rank = args.global_rank = index# xm.get_ordinal()
-    args.world_size = world_size = 8 # xm.xrt_world_size()
-
+    dev_env = initialize_device(force_cpu=False, amp=False, channels_last=False)
+    args.world_size = world_size = dev_env.world_size
+    args.local_rank = local_rank = dev_env.local_rank
+    args.global_rank = global_rank = dev_env.global_rank
     args.use_wandb = True if global_rank == 0 and args.use_wandb else False
 
-    args.save = "{}tpuv3Train-{}-{}-{}".format(
+    args.save = "{}tpuv2Train-{}-{}-{}".format(
         args.save, args.job_id, args.note, time.strftime("%Y%m%d-%H%M")
     )
     print(
@@ -127,21 +125,21 @@ def map_fn(index, args):
         wandb_art = None
 
     logging.info("args = %s", args)
+    random_seed(args.seed, 0)
 
     args.in_memory = True
     m = 0
     models_to_eval = 1
     device = xm.xla_device()
-
-    train_queue, valid_queue, len_tdset = build_torchvision_loader_tpu(args)
+    # Dataloader here
+    train_queue, valid_queue = build_loader_timm_tpu(args)
+    # train_queue, valid_queue = build_torchvision_loader_tpu(args)
     criterion_train = LabelSmoothingCrossEntropy(smoothing=args.label_smoothing).to(device)
     criterion_val = torch.nn.CrossEntropyLoss().to(device)
     args.writer = None
     if xm.is_master_ordinal():
         import torch_xla.test.test_utils as test_utils
-
         args.writer = test_utils.get_summary_writer(args.save)
-
     mixup_fn = None
     if args.use_mixup:
         mixup_fn = Mixup(
@@ -165,6 +163,7 @@ def map_fn(index, args):
         )
         activation_fn, mode = "silu", "train"
         args.macs, args.params = None, None
+        '''
         if args.global_rank == 0:
             args.macs, args.params = profile_model(
                 (1, 3, 224, 224),
@@ -172,6 +171,7 @@ def map_fn(index, args):
                 activation_fn=activation_fn,
                 mode=mode,
             )
+        '''
         model = Network(design=args.design, activation_fn=activation_fn, mode=mode)
         model = model.to(device)
 
@@ -184,7 +184,6 @@ def map_fn(index, args):
             )
 
         args.opt = "rmsproptf"
-        args.lr = 0.010
         args.weight_decay = 1e-5
         args.momentum = 0.9
         args.opt_eps = 0.001
@@ -195,11 +194,10 @@ def map_fn(index, args):
         args.decay_rate = 0.97
         args.sched = "step"
         args.warmup_lr = 1e-6
+        args.warmup_epochs = 10
         args.lr_cycle_decay = 0.5
         args.decay_milestones = [90, 180, 270]
-        lr_scheduler, num_epochs = create_scheduler_v2(
-            optimizer, **scheduler_kwargs(args), updates_per_epoch=len(train_queue)
-        )
+        lr_scheduler, num_epochs = create_scheduler(args, optimizer)
 
         train_acc, train_loss, valid_t1, valid_t5, valid_loss = train_x_epochs_tpu(
             args.epochs,
@@ -208,7 +206,8 @@ def map_fn(index, args):
             valid_queue,
             model,
             model_ema,
-            criterion,
+            criterion_train,
+            criterion_val,
             optimizer,
             mixup_fn,
             args,
@@ -222,6 +221,7 @@ def map_fn(index, args):
         del model, optimizer
         gc.collect()
         m += 1
+    xm.rendezvous('checking_out')
 
 
 # Map Function
@@ -292,7 +292,7 @@ def main():
     args.job_id = job_id
     args.update_freq = 1
     flags = args
-    xmp.spawn(map_fn, args=(flags,), nprocs=8, start_method="fork")
+    xmp.spawn(map_fn, args=(flags,), nprocs=8)#, start_method="fork")
     exit(0)
 
 
