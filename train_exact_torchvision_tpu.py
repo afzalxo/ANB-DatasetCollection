@@ -162,14 +162,14 @@ def map_fn(index, args):
         )
     while m < models_to_eval:
         args.model_num = m
-        args.design = searchables.EffNetB0Conf()
+        args.design = searchables.CustomSearchable([4,6,6,6,6,6,6], [3,5,5,5,5,5,5], [2,1,3,3,3,4,3], [False, False, False, False, False, False, True])
         logging.info(
             "Job ID: %d, Model Number: %d, Design: \n%s",
             args.job_id,
             args.model_num,
             np.array(args.design),
         )
-        activation_fn, mode = "silu", "train"
+        activation_fn, mode = "relu", "train"
         args.macs, args.params = None, None
         '''
         if args.global_rank == 0:
@@ -194,20 +194,6 @@ def map_fn(index, args):
         args.lr_cycle_decay = 0.5
         #args.decay_milestones = [90, 180, 270]
         args.decay_milestones = [30, 60]
-
-        # FIXME Temporaray code here to check parser
-        design = args.design
-        writer = args.writer
-        args.design = 0
-        args.wandb_con = 0
-        args.writer = 0
-        import yaml
-        args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
-        with open(os.path.join(args.save, 'args.yaml'), 'w') as f:
-            f.write(args_text)
-        args.design = design
-        args.wandb_con = wandb_con
-        args.writer = writer
 
         model = Network(design=args.design, activation_fn=activation_fn, mode=mode)
         model = model.to(device)
@@ -306,7 +292,7 @@ def main():
     args.cutmix_minmax = None
 
     args.model_ema = True
-    args.model_ema_decay = 0.9999
+    args.model_ema_decay = 0.99995
     args.model_ema_force_cpu = False
 
     # os.environ["XLA_USE_BF16"] = "1"

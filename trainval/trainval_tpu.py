@@ -267,11 +267,19 @@ def train_x_epochs_tpu(
                 )
                 if model_ema is not None and not args.model_ema_force_cpu:
                     args.wandb_con.log(
-                            { "ema_valid_top1": avg_top1_val_ema,
-                                "ema_valid_top5": avg_top5_val_ema,
-                                "ema_v_loss": valid_obj_ema,
-
-                                }, commit=True)
+                            { 
+                            "ema_valid_top1": avg_top1_val_ema,
+                            "ema_valid_top5": avg_top5_val_ema,
+                            "ema_v_loss": valid_obj_ema,
+                            }, commit=True)
+            logging.info(
+                "[TEST] Epoch %d, Valid_acc_top1 %f, Valid_acc_top5 %f",
+                epoch, avg_top1_val, avg_top5_val
+            )
+            logging.info(
+                "[TEST][EMA] Epoch %d, Valid_acc_top1 %f, Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f",
+                epoch, avg_top1_val_ema, avg_top5_val_ema, best_acc_top1, best_acc_top5
+            )
             if model_ema is not None and not args.model_ema_force_cpu:
                 avg_top1_val, avg_top5_val, valid_obj = avg_top1_val_ema, avg_top5_val_ema, valid_obj_ema
             if avg_top5_val > best_acc_top5:
@@ -289,11 +297,6 @@ def train_x_epochs_tpu(
                     },
                     args.save,
                     )
-            logging.info(
-                "Epoch %d, Valid_acc_top1 %f,\
-                Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f",
-                epoch, avg_top1_val, avg_top5_val, best_acc_top1, best_acc_top5
-            )
         lr_scheduler.step(epoch + 1, valid_acc_top1)
     train_endtime = time.time()
     if args.global_rank == 0:
