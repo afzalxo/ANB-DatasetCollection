@@ -12,6 +12,7 @@ import torch.utils
 import torch.backends.cudnn as cudnn
 import random
 import warnings
+from dataclasses import replace
 from thop import profile
 
 import torch_xla
@@ -29,11 +30,13 @@ from timm.loss import LabelSmoothingCrossEntropy
 from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler#, scheduler_kwargs
 from timm.utils import ModelEmaV2, random_seed
-from timm.bits import initialize_device
+from timm.bits import initialize_device, TrainCfg, setup_model_and_optimizer
 
+from timm.utils import setup_default_logging
 
 warnings.filterwarnings("ignore")
 
+logger = logging.getLogger(__name__)
 
 def profile_model(input_size, design, activation_fn, mode):
     model_temp = Network(design=design, activation_fn=activation_fn, mode=mode)
@@ -72,6 +75,8 @@ def map_fn(index, args):
         utils.create_exp_dir(
             args.save, scripts_to_save=glob.glob("**/*.py", recursive=True)
         )
+        setup_default_logging(log_path=os.path.join(args.save, f"log_rank{args.global_rank}.txt"))
+        '''
         log_format = f"%(asctime)s - Rank {args.global_rank} - %(message)s"
         logging.basicConfig(
             stream=sys.stdout,
@@ -84,6 +89,8 @@ def map_fn(index, args):
         )
         fh.setFormatter(logging.Formatter(log_format))
         logging.getLogger().addHandler(fh)
+        '''
+        logging.info("Initialized logging...")
 
     wandb_con = None
     wandb_art = None
@@ -125,15 +132,16 @@ def map_fn(index, args):
         wandb_art = None
 
     logging.info("args = %s", args)
-    random_seed(args.seed, 0)
 
     args.in_memory = True
     m = 0
     models_to_eval = 1
     device = xm.xla_device()
     # Dataloader here
+    random_seed(args.seed, args.global_rank)
     train_queue, valid_queue = build_loader_timm_tpu(args)
     # train_queue, valid_queue = build_torchvision_loader_tpu(args)
+    random_seed(args.seed, 0)
     criterion_train = LabelSmoothingCrossEntropy(smoothing=args.label_smoothing).to(device)
     criterion_val = torch.nn.CrossEntropyLoss().to(device)
     args.writer = None
@@ -172,8 +180,39 @@ def map_fn(index, args):
                 mode=mode,
             )
         '''
+        args.opt = "rmsproptf"
+        args.weight_decay = 1e-5
+        args.momentum = 0.9
+        args.opt_eps = 0.001
+
+        args.epochs = 450
+        args.decay_epochs = 2.4
+        args.decay_rate = 0.97
+        args.sched = "step"
+        args.warmup_lr = 1e-6
+        args.warmup_epochs = 5
+        args.lr_cycle_decay = 0.5
+        #args.decay_milestones = [90, 180, 270]
+        args.decay_milestones = [30, 60]
+
+        # FIXME Temporaray code here to check parser
+        design = args.design
+        writer = args.writer
+        args.design = 0
+        args.wandb_con = 0
+        args.writer = 0
+        import yaml
+        args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
+        with open(os.path.join(args.save, 'args.yaml'), 'w') as f:
+            f.write(args_text)
+        args.design = design
+        args.wandb_con = wandb_con
+        args.writer = writer
+
         model = Network(design=args.design, activation_fn=activation_fn, mode=mode)
         model = model.to(device)
+
+        optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
 
         model_ema = None
         if args.model_ema:
@@ -183,20 +222,6 @@ def map_fn(index, args):
                 device="cpu" if args.model_ema_force_cpu else None,
             )
 
-        args.opt = "rmsproptf"
-        args.weight_decay = 1e-5
-        args.momentum = 0.9
-        args.opt_eps = 0.001
-        optimizer = create_optimizer_v2(model, **optimizer_kwargs(cfg=args))
-
-        args.epochs = 450
-        args.decay_epochs = 2.4
-        args.decay_rate = 0.97
-        args.sched = "step"
-        args.warmup_lr = 1e-6
-        args.warmup_epochs = 10
-        args.lr_cycle_decay = 0.5
-        args.decay_milestones = [90, 180, 270]
         lr_scheduler, num_epochs = create_scheduler(args, optimizer)
 
         train_acc, train_loss, valid_t1, valid_t5, valid_loss = train_x_epochs_tpu(
@@ -273,18 +298,18 @@ def main():
     args.opt_eps = 1e-8
 
     args.use_mixup = False
-    args.mixup = 0.8
+    args.mixup = 0.0
     args.mixup_mode = "batch"
     args.mixup_prob = 1
     args.mixup_switch_prob = 0.5
-    args.cutmix = 1
+    args.cutmix = 0
     args.cutmix_minmax = None
 
     args.model_ema = True
     args.model_ema_decay = 0.9999
     args.model_ema_force_cpu = False
 
-    os.environ["XLA_USE_BF16"] = "1"
+    # os.environ["XLA_USE_BF16"] = "1"
     job_id = os.getpid()
     ip = "127.0.0.1"
 

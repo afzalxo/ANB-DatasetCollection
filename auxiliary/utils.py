@@ -41,9 +41,7 @@ def distribute_bn(model, world_size, reduce=False):
 
 
 def reduce_xla_tensor(tens, world_size):
-    clone = tens.clone()
-    clone = xm.all_reduce(xm.REDUCE_SUM, clone)
-    reduced = clone / world_size
+    reduced = xm.all_reduce(xm.REDUCE_SUM, tens, scale=1/world_size)
     return reduced
 
 

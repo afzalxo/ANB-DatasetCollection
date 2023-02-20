@@ -44,7 +44,7 @@ def build_loader_timm(args):
     from timm.data import create_dataset, create_loader 
     args.input_size = 224
     args.imagenet_default_mean_and_std = True
-    args.train_interpolation = "bicubic"
+    args.train_interpolation = "random"
     args.reprob = 0.20
     args.remode = "pixel"
     args.recount = 1
@@ -134,16 +134,15 @@ def build_loader_timm_tpu(args):
     from timm.data import create_dataset, PreprocessCfg, AugCfg, create_loader_v2
     args.input_size = 224
     args.imagenet_default_mean_and_std = True
-    args.train_interpolation = "bicubic"
+    args.train_interpolation = "random"
     args.reprob = 0.20
     args.remode = "pixel"
     args.recount = 1
     args.resplit = False
-    # args.aa = "rand-m9-mstd0.5-inc1"
     args.aa = "rand-m9-mstd0.5"
     args.scale = [0.08, 1.0]
     args.ratio = [3. / 4., 4. / 3.]
-    args.color_jitter = None# 0.4
+    args.color_jitter = None#0.4
     args.hflip = 0.5
     args.vflip = 0.0
     args.aug_repeats = 0
@@ -152,18 +151,17 @@ def build_loader_timm_tpu(args):
     collate_fn = None
     args.prefetcher=True
     dataset_train = create_dataset(
-        'imagefolder',
+        '',
         root=args.train_dataset,
         split='train',
         is_training=True,
         class_map='',
         download=False,
         batch_size=args.train_batch_size,
-        # seed=args.seed,
         repeats=0,
     )
     dataset_eval = create_dataset(
-        'imagefolder',
+        '',
         root=args.train_dataset,
         split='validation',
         is_training=False,
@@ -197,6 +195,13 @@ def build_loader_timm_tpu(args):
         std=data_config['std'],
         aug=train_aug_cfg,
     )
+    eval_pp_cfg = PreprocessCfg(
+        input_size=data_config['input_size'],
+        interpolation=data_config['interpolation'],
+        crop_pct=data_config['crop_pct'],
+        mean=data_config['mean'],
+        std=data_config['std'],
+    )
     normalize_in_transform = args.reprob > 0
     loader_train = create_loader_v2(
         dataset_train,
@@ -209,16 +214,6 @@ def build_loader_timm_tpu(args):
         pin_memory=False,
         use_multi_epochs_loader=False
     )
-
-    eval_pp_cfg = PreprocessCfg(
-        input_size=data_config['input_size'],
-        interpolation=data_config['interpolation'],
-        crop_pct=data_config['crop_pct'],
-        mean=data_config['mean'],
-        std=data_config['std'],
-    )
-    print(train_pp_cfg)
-    print(eval_pp_cfg)
     loader_eval = create_loader_v2(
         dataset_eval,
         batch_size=args.val_batch_size,
@@ -237,7 +232,7 @@ def build_torchvision_loader_tpu(args):
 
     args.input_size = 224
     args.imagenet_default_mean_and_std = True
-    args.train_interpolation = "bicubic"
+    args.train_interpolation = "random"
     args.reprob = 0.20
     args.remode = "pixel"
     args.recount = 1
@@ -306,7 +301,7 @@ def build_torchvision_loader_gpu(args):
 
     args.input_size = 224
     args.imagenet_default_mean_and_std = True
-    args.train_interpolation = "bicubic"
+    args.train_interpolation = "random"
     args.reprob = 0.20
     args.remode = "pixel"
     args.recount = 1
