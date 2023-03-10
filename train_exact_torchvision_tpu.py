@@ -21,14 +21,17 @@ import torch_xla.distributed.xla_multiprocessing as xmp
 
 import auxiliary.utils as utils
 from trainval.trainval_tpu import train_x_epochs_tpu
-from dataloader.torchvision_dataloader import build_loader_timm_tpu, build_torchvision_loader_tpu
+from dataloader.torchvision_dataloader import (
+    build_loader_timm_tpu,
+    build_torchvision_loader_tpu,
+)
 from models.accelbenchnet import AccelNet as Network
 from searchables import searchables
 
 from timm.data.mixup import Mixup
 from timm.loss import LabelSmoothingCrossEntropy
 from timm.optim import create_optimizer_v2, optimizer_kwargs
-from timm.scheduler import create_scheduler#, scheduler_kwargs
+from timm.scheduler import create_scheduler  # , scheduler_kwargs
 from timm.utils import ModelEmaV2, random_seed
 from timm.bits import initialize_device, TrainCfg, setup_model_and_optimizer
 
@@ -37,6 +40,7 @@ from timm.utils import setup_default_logging
 warnings.filterwarnings("ignore")
 
 logger = logging.getLogger(__name__)
+
 
 def profile_model(input_size, design, activation_fn, mode):
     model_temp = Network(design=design, activation_fn=activation_fn, mode=mode)
@@ -75,8 +79,10 @@ def map_fn(index, args):
         utils.create_exp_dir(
             args.save, scripts_to_save=glob.glob("**/*.py", recursive=True)
         )
-        setup_default_logging(log_path=os.path.join(args.save, f"log_rank{args.global_rank}.txt"))
-        '''
+        setup_default_logging(
+            log_path=os.path.join(args.save, f"log_rank{args.global_rank}.txt")
+        )
+        """
         log_format = f"%(asctime)s - Rank {args.global_rank} - %(message)s"
         logging.basicConfig(
             stream=sys.stdout,
@@ -89,7 +95,7 @@ def map_fn(index, args):
         )
         fh.setFormatter(logging.Formatter(log_format))
         logging.getLogger().addHandler(fh)
-        '''
+        """
         logging.info("Initialized logging...")
 
     wandb_con = None
@@ -142,11 +148,14 @@ def map_fn(index, args):
     train_queue, valid_queue = build_loader_timm_tpu(args)
     # train_queue, valid_queue = build_torchvision_loader_tpu(args)
     random_seed(args.seed, 0)
-    criterion_train = LabelSmoothingCrossEntropy(smoothing=args.label_smoothing).to(device)
+    criterion_train = LabelSmoothingCrossEntropy(smoothing=args.label_smoothing).to(
+        device
+    )
     criterion_val = torch.nn.CrossEntropyLoss().to(device)
     args.writer = None
     if xm.is_master_ordinal():
         import torch_xla.test.test_utils as test_utils
+
         args.writer = test_utils.get_summary_writer(args.save)
     mixup_fn = None
     if args.use_mixup:
@@ -162,7 +171,12 @@ def map_fn(index, args):
         )
     while m < models_to_eval:
         args.model_num = m
-        args.design = searchables.CustomSearchable([4,6,6,6,6,6,6], [3,5,5,5,5,5,5], [2,1,3,3,3,4,3], [False, False, False, False, False, False, True])
+        args.design = searchables.Searchables().custom_searchable(
+            [4, 6, 6, 6, 6, 6, 6],
+            [3, 5, 5, 5, 5, 5, 5],
+            [2, 1, 3, 3, 3, 4, 3],
+            [False, False, False, False, False, False, True],
+        )
         logging.info(
             "Job ID: %d, Model Number: %d, Design: \n%s",
             args.job_id,
@@ -171,15 +185,6 @@ def map_fn(index, args):
         )
         activation_fn, mode = "relu", "train"
         args.macs, args.params = None, None
-        '''
-        if args.global_rank == 0:
-            args.macs, args.params = profile_model(
-                (1, 3, 224, 224),
-                design=args.design,
-                activation_fn=activation_fn,
-                mode=mode,
-            )
-        '''
         args.opt = "rmsproptf"
         args.weight_decay = 1e-5
         args.momentum = 0.9
@@ -192,7 +197,6 @@ def map_fn(index, args):
         args.warmup_lr = 1e-6
         args.warmup_epochs = 5
         args.lr_cycle_decay = 0.5
-        #args.decay_milestones = [90, 180, 270]
         args.decay_milestones = [30, 60]
 
         model = Network(design=args.design, activation_fn=activation_fn, mode=mode)
@@ -232,7 +236,7 @@ def map_fn(index, args):
         del model, optimizer
         gc.collect()
         m += 1
-    xm.rendezvous('checking_out')
+    xm.rendezvous("checking_out")
 
 
 # Map Function
@@ -303,7 +307,7 @@ def main():
     args.job_id = job_id
     args.update_freq = 1
     flags = args
-    xmp.spawn(map_fn, args=(flags,), nprocs=8)#, start_method="fork")
+    xmp.spawn(map_fn, args=(flags,), nprocs=8)  # , start_method="fork")
     exit(0)
 
 

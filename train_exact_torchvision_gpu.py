@@ -14,9 +14,7 @@ from functools import partial
 import torch
 import torch.nn as nn
 import torch.utils
-import torch.multiprocessing as mp
 import torch.distributed as dist
-import torch.backends.cudnn as cudnn
 from torch.nn.parallel import DistributedDataParallel
 from thop import profile
 
@@ -174,7 +172,7 @@ def map_fn(args):
         )
     while m < models_to_eval:
         args.model_num = m
-        args.design = searchables.EffNetB0Conf()
+        args.design = searchables.Searchables().efficientnet_b0_conf()
         logging.info(
             "Job ID: %d, Model Number: %d, Design: \n%s",
             args.job_id,
@@ -249,9 +247,6 @@ def map_fn(args):
         del model, optimizer
         gc.collect()
         m += 1
-
-
-# Map Function
 
 
 def main():

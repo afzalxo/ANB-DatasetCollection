@@ -45,10 +45,6 @@ def setup_distributed(rank, local_rank, address, port, world_size, cluster):
     torch.cuda.set_device(local_rank)
 
 
-def cleanup_distributed():
-    dist.destroy_process_group()
-
-
 def setup_for_distributed(is_master):
     """
     This function disables printing when not in master process
@@ -232,21 +228,21 @@ def main():
     np.set_printoptions(precision=4)
     if global_rank == 0:
         utils.create_exp_dir(
-            args.save, scripts_to_save=glob.glob("**/*.py", recursive=True)
+            args.save, scripts_to_save=None  # glob.glob("**/*.py", recursive=True)
         )
     if args.distributed:
         dist.barrier()
-    # if args.global_rank == 0:
-    log_format = f"%(asctime)s - Rank {args.global_rank} - %(message)s"
-    logging.basicConfig(
-        stream=sys.stdout,
-        level=logging.INFO,
-        format=log_format,
-        datefmt="%m/%d %I:%M:%S %p",
-    )
-    fh = logging.FileHandler(os.path.join(args.save, f"log_rank{args.global_rank}.txt"))
-    fh.setFormatter(logging.Formatter(log_format))
-    logging.getLogger().addHandler(fh)
+    if args.global_rank == 0:
+        log_format = f"%(asctime)s - Rank {args.global_rank} - %(message)s"
+        logging.basicConfig(
+            stream=sys.stdout,
+            level=logging.INFO,
+            format=log_format,
+            datefmt="%m/%d %I:%M:%S %p",
+        )
+        fh = logging.FileHandler(os.path.join(args.save, f"log_rank{args.global_rank}.txt"))
+        fh.setFormatter(logging.Formatter(log_format))
+        logging.getLogger().addHandler(fh)
 
     wandb_con = None
     wandb_art = None
@@ -301,9 +297,7 @@ def main():
         args.model_num = m
         if args.distributed:
             dist.barrier()
-        args.design = (
-            searchables.EfficientNetB0Conf()
-        )  # .RandomSearchable()
+        args.design = searchables.Searchables().efficientnet_b0_conf()
         logging.info(
             "Job ID: %d, Model Number: %d, Design: \n%s",
             args.job_id,
@@ -320,20 +314,19 @@ def main():
                 mode=mode,
                 local_rank=args.local_rank,
             )
-        rank_trainables = [False] * args.world_size
         mem, trainable = profile_memory(
-            args.design, activation_fn, mode, args.local_rank
+            args.design,
+            activation_fn,
+            mode,
+            args.train_batch_size,
+            args.max_res,
+            args.local_rank,
         )
         if mem > 22.0:
             print(f"Memory required {mem} greater than 22.0 GiB threshold...")
             trainable = False
-        rank_trainables[args.global_rank] = trainable
-        rank_trainables = torch.Tensor([rank_trainables])
-        torch.distributed.all_reduce(rank_trainables, op=torch.distributed.ReduceOp.SUM)
-        if not rank_trainables.all():
-            trainable = False
-        else:
-            trainable = True
+        if args.distributed:
+            trainable = utils.reduce_tensor(trainable, args.world_size)
         if not trainable:
             logging.info(
                 "Design not trainable due to GPU mem overflows...\nMoving to next design..."

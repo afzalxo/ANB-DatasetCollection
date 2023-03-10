@@ -13,7 +13,7 @@ def build_torchvision_loader(args, is_train=False):
     mean = [0.485, 0.456, 0.406]
     std = [0.229, 0.224, 0.225]
     size = int(input_size / crop_pct)
-    t.append(transforms.Resize(size))
+    t.append(transforms.Resize(size, transforms.InterpolationMode.BICUBIC))
     t.append(transforms.CenterCrop(input_size))
     t.append(transforms.ToTensor())
     t.append(transforms.Normalize(mean, std))
@@ -41,7 +41,8 @@ def build_torchvision_loader(args, is_train=False):
 
 
 def build_loader_timm(args):
-    from timm.data import create_dataset, create_loader 
+    from timm.data import create_dataset, create_loader
+
     args.input_size = 224
     args.imagenet_default_mean_and_std = True
     args.train_interpolation = "random"
@@ -52,39 +53,39 @@ def build_loader_timm(args):
     # args.aa = "rand-m9-mstd0.5-inc1"
     args.aa = "rand-m9-mstd0.5"
     args.scale = [0.08, 1.0]
-    args.ratio = [3. / 4., 4. / 3.]
+    args.ratio = [3.0 / 4.0, 4.0 / 3.0]
     args.color_jitter = 0.4
     args.hflip = 0.5
     args.vflip = 0.0
     args.color_jitter = 0.4
     args.aug_repeats = 0
     num_aug_splits = 0
-    train_interpolation = 'random'
+    train_interpolation = "random"
     collate_fn = None
-    args.prefetcher=True
+    args.prefetcher = True
     dataset_train = create_dataset(
-        'imagefolder',
+        "imagefolder",
         root=args.train_dataset,
-        split='train',
+        split="train",
         is_training=True,
-        class_map='',
+        class_map="",
         download=False,
         batch_size=args.train_batch_size,
         seed=args.seed,
         repeats=0,
     )
     dataset_eval = create_dataset(
-        'imagefolder',
+        "imagefolder",
         root=args.train_dataset,
-        split='validation',
+        split="validation",
         is_training=False,
-        class_map='',
+        class_map="",
         download=False,
         batch_size=args.val_batch_size,
     )
     loader_train = create_loader(
         dataset_train,
-        input_size=(3,224,224),
+        input_size=(3, 224, 224),
         batch_size=args.train_batch_size,
         is_training=True,
         use_prefetcher=args.prefetcher,
@@ -108,30 +109,31 @@ def build_loader_timm(args):
         distributed=args.distributed,
         collate_fn=collate_fn,
         pin_memory=False,
-        device=torch.device(f'cuda:{args.local_rank}'),
+        device=torch.device(f"cuda:{args.local_rank}"),
         use_multi_epochs_loader=False,
-        worker_seeding='all',
+        worker_seeding="all",
     )
     loader_eval = create_loader(
         dataset_eval,
-        input_size=(3,224,224),
+        input_size=(3, 224, 224),
         batch_size=None or args.train_batch_size,
         is_training=False,
         use_prefetcher=args.prefetcher,
-        interpolation='bicubic',
+        interpolation="bicubic",
         mean=constants.IMAGENET_DEFAULT_MEAN,
         std=constants.IMAGENET_DEFAULT_STD,
         num_workers=args.num_workers,
         distributed=args.distributed,
         crop_pct=constants.DEFAULT_CROP_PCT,
         pin_memory=False,
-        device=torch.device(f'cuda:{args.local_rank}'),
+        device=torch.device(f"cuda:{args.local_rank}"),
     )
-    return loader_train, loader_eval, dataset_train 
+    return loader_train, loader_eval, dataset_train
 
 
 def build_loader_timm_tpu(args):
     from timm.data import create_dataset, PreprocessCfg, AugCfg, create_loader_v2
+
     args.input_size = 224
     args.imagenet_default_mean_and_std = True
     args.train_interpolation = "random"
@@ -141,66 +143,67 @@ def build_loader_timm_tpu(args):
     args.resplit = False
     args.aa = "rand-m9-mstd0.5"
     args.scale = [0.08, 1.0]
-    args.ratio = [3. / 4., 4. / 3.]
-    args.color_jitter = None#0.4
+    args.ratio = [3.0 / 4.0, 4.0 / 3.0]
+    args.color_jitter = None  # 0.4
     args.hflip = 0.5
     args.vflip = 0.0
     args.aug_repeats = 0
     args.aug_splits = 0
-    train_interpolation = 'random'
+    train_interpolation = "random"
     collate_fn = None
-    args.prefetcher=True
+    args.prefetcher = True
     dataset_train = create_dataset(
-        '',
+        "",
         root=args.train_dataset,
-        split='train',
+        split="train",
         is_training=True,
-        class_map='',
+        class_map="",
         download=False,
         batch_size=args.train_batch_size,
         repeats=0,
     )
     dataset_eval = create_dataset(
-        '',
+        "",
         root=args.train_dataset,
-        split='validation',
+        split="validation",
         is_training=False,
-        class_map='',
+        class_map="",
         download=False,
         batch_size=args.val_batch_size,
     )
-    data_config = {'input_size': (3,224,224),
-                    'mean': constants.IMAGENET_DEFAULT_MEAN,
-                    'std': constants.IMAGENET_DEFAULT_STD,
-                    'crop_pct': constants.DEFAULT_CROP_PCT,
-                    'interpolation': 'bicubic',
-                    }
+    data_config = {
+        "input_size": (3, 224, 224),
+        "mean": constants.IMAGENET_DEFAULT_MEAN,
+        "std": constants.IMAGENET_DEFAULT_STD,
+        "crop_pct": constants.DEFAULT_CROP_PCT,
+        "interpolation": "bicubic",
+    }
     train_aug_cfg = AugCfg(
-            re_prob=args.reprob,
-            re_mode=args.remode,
-            re_count=args.recount,
-            ratio_range=args.ratio,
-            scale_range=args.scale,
-            hflip_prob=args.hflip,
-            vflip_prob=args.vflip,
-            color_jitter=args.color_jitter,
-            auto_augment=args.aa,
-            num_aug_splits=args.aug_splits,
-        )
+        re_prob=args.reprob,
+        re_mode=args.remode,
+        re_count=args.recount,
+        ratio_range=args.ratio,
+        scale_range=args.scale,
+        hflip_prob=args.hflip,
+        vflip_prob=args.vflip,
+        color_jitter=args.color_jitter,
+        auto_augment=args.aa,
+        num_aug_splits=args.aug_splits,
+    )
     train_pp_cfg = PreprocessCfg(
-        input_size=data_config['input_size'],
-        interpolation='random',
-        crop_pct=data_config['crop_pct'],
-        mean=data_config['mean'],
-        std=data_config['std'],
+        input_size=data_config["input_size"],
+        interpolation="random",
+        crop_pct=data_config["crop_pct"],
+        mean=data_config["mean"],
+        std=data_config["std"],
         aug=train_aug_cfg,
     )
     eval_pp_cfg = PreprocessCfg(
-        input_size=data_config['input_size'],
-        interpolation=data_config['interpolation'],
-        crop_pct=data_config['crop_pct'],
-        mean=data_config['mean'],
-        std=data_config['std'],
+        input_size=data_config["input_size"],
+        interpolation=data_config["interpolation"],
+        crop_pct=data_config["crop_pct"],
+        mean=data_config["mean"],
+        std=data_config["std"],
     )
     normalize_in_transform = args.reprob > 0
     loader_train = create_loader_v2(
@@ -212,7 +215,7 @@ def build_loader_timm_tpu(args):
         normalize_in_transform=normalize_in_transform,
         num_workers=args.num_workers,
         pin_memory=False,
-        use_multi_epochs_loader=False
+        use_multi_epochs_loader=False,
     )
     loader_eval = create_loader_v2(
         dataset_eval,
@@ -244,7 +247,7 @@ def build_torchvision_loader_tpu(args):
     train_transforms = build_transform(is_train=True, args=args)
     val_transforms = build_transform(is_train=False, args=args)
 
-    '''
+    """
     print("---" * 10)
     print("Train Transforms:")
     for t in train_transforms.transforms:
@@ -255,7 +258,7 @@ def build_torchvision_loader_tpu(args):
     for t in val_transforms.transforms:
         print(t)
     print("---" * 10)
-    '''
+    """
 
     root = os.path.join(args.train_dataset, "train")
     train_dataset = datasets.ImageFolder(root, transform=train_transforms)
@@ -293,7 +296,7 @@ def build_torchvision_loader_tpu(args):
         num_workers=args.num_workers,
     )
 
-    return train_loader, test_loader #, len_tdset
+    return train_loader, test_loader  # , len_tdset
 
 
 def build_torchvision_loader_gpu(args):
@@ -313,7 +316,7 @@ def build_torchvision_loader_gpu(args):
     train_transforms = build_transform(is_train=True, args=args)
     val_transforms = build_transform(is_train=False, args=args)
 
-    '''
+    """
     print("---" * 10)
     print("Train Transforms:")
     for t in train_transforms.transforms:
@@ -324,7 +327,7 @@ def build_torchvision_loader_gpu(args):
     for t in val_transforms.transforms:
         print(t)
     print("---" * 10)
-    '''
+    """
 
     root = os.path.join(args.train_dataset, "train")
     train_dataset = datasets.ImageFolder(root, transform=train_transforms)

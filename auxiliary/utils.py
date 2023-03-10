@@ -20,6 +20,7 @@ try:
 except ImportError:
     xm = None
 
+
 def reduce_tensor(tensor, n):
     rt = tensor.clone()
     dist.all_reduce(rt, op=dist.ReduceOp.SUM)

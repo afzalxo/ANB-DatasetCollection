@@ -297,7 +297,7 @@ def main():
     if args.distributed:
         dist.barrier()
     design_list = utils.config_json_to_list_repr(args.architecture_json)
-    args.design = searchables.CustomSearchable(
+    args.design = searchables.Searchables.custom_searchable(
         e=design_list[0], k=design_list[1], la=design_list[2], se=design_list[3]
     )
     logging.info(

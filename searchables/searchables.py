@@ -1,145 +1,149 @@
 import random
 
 
-def EffNetB0Conf():
-    num_blocks = 7
-    strides = [1, 2, 2, 2, 1, 2, 1]
-    ich = [32, 16, 24, 40, 80, 112, 192]
-    och = [16, 24, 40, 80, 112, 192, 320]
-    layer_confs = []
-    bchoices = ["MB" for i in range(num_blocks)]
-    kchoices = [3, 3, 5, 3, 5, 5, 3]
-    echoices = [1, 6, 6, 6, 6, 6, 6]
-    lchoices = [1, 2, 2, 3, 3, 4, 1]
-    sechoices = [True for i in range(num_blocks)]
-    for i in range(num_blocks):
-        conf = [
-            bchoices[i],
-            echoices[i],
-            kchoices[i],
-            strides[i],
-            ich[i],
-            och[i],
-            lchoices[i],
-            sechoices[i],
-        ]
-        layer_confs.append(conf)
-    return layer_confs
+class Searchables:
+    def __init__(self):
+        self.num_blocks = 7
+        self.strides = [1, 2, 2, 2, 1, 2, 1]
+        self.ich = [32, 16, 24, 40, 80, 112, 192]
+        self.och = [16, 24, 40, 80, 112, 192, 320]
+        self.bchoices = ["MB" for i in range(self.num_blocks)]
+        self.kernel_sizes = [3, 5]
+        self.exp = [1, 4, 6]
+        self.layers = [1, 2, 3]  # Choices are 1,2,3 for all blocks except 6th
+        self.squeeze_excite_options = [True, False]
 
-
-def RandomSearchable():
-    num_blocks = 7
-    strides = [1, 2, 2, 2, 1, 2, 1]
-    ich = [32, 16, 24, 40, 80, 112, 192]
-    och = [16, 24, 40, 80, 112, 192, 320]
-    blocktypes = ["MB"]
-    kernel_sizes = [3, 5]
-    exp = [1, 4, 6]
-    layers = [1, 2, 3]
-    squeeze_excite_options = [True, False]
-    layer_confs = []
-    bchoices = random.choices(blocktypes, k=num_blocks)
-    kchoices = random.choices(kernel_sizes, k=num_blocks)
-    echoices = random.choices(exp, k=num_blocks)
-    lchoices = random.choices(layers, k=num_blocks)
-    sechoices = random.choices(squeeze_excite_options, k=num_blocks)
-    for i in range(num_blocks):
-        conf = [
-            bchoices[i],
-            echoices[i],
-            kchoices[i],
-            strides[i],
-            ich[i],
-            och[i],
-            lchoices[i],
-            sechoices[i],
-        ]
-        layer_confs.append(conf)
-    return layer_confs
-
-
-def CustomSearchable(e, k, la, se):
-    num_blocks = 7
-    strides = [1, 2, 2, 2, 1, 2, 1]
-    ich = [32, 16, 24, 40, 80, 112, 192]
-    och = [16, 24, 40, 80, 112, 192, 320]
-    blocktypes = ["MB"]
-    layer_confs = []
-    bchoices = random.choices(blocktypes, k=num_blocks)
-    kchoices = k
-    echoices = e
-    lchoices = la
-    sechoices = se
-    for i in range(num_blocks):
-        conf = [
-            bchoices[i],
-            echoices[i],
-            kchoices[i],
-            strides[i],
-            ich[i],
-            och[i],
-            lchoices[i],
-            sechoices[i],
-        ]
-        layer_confs.append(conf)
-    return layer_confs
-
-
-def TestSearchable():
-    num_blocks = 7
-    strides = [1, 2, 2, 2, 1, 2, 1]
-    ich = [32, 16, 24, 40, 80, 112, 192]
-    och = [16, 24, 40, 80, 112, 192, 320]
-    blocktypes = ["MB"]
-    layer_confs = []
-    bchoices = random.choices(blocktypes, k=num_blocks)
-    kchoices = [3, 3, 3, 5, 5, 3, 5]
-    echoices = [6, 6, 6, 4, 4, 6, 6]
-    lchoices = [3, 1, 3, 3, 2, 2, 1]
-    for i in range(num_blocks):
-        conf = [
-            bchoices[i],
-            echoices[i],
-            kchoices[i],
-            strides[i],
-            ich[i],
-            och[i],
-            lchoices[i],
-        ]
-        layer_confs.append(conf)
-    return layer_confs
-
-
-def NRandomSearchables(n, seed):
-    random.seed(seed)
-    num_blocks = 7
-    strides = [1, 2, 2, 2, 1, 2, 1]
-    ich = [32, 16, 24, 40, 80, 112, 192]
-    och = [16, 24, 40, 80, 112, 192, 320]
-    blocktypes = ["MB"]
-    kernel_sizes = [3, 5]
-    exp = [1, 4, 6]
-    layers = [1, 2, 3]
-    squeeze_excite_options = [True, False]
-    searchables = []
-    for i in range(n):
+    def searchable_from_conf(self, _conf):
         layer_confs = []
-        bchoices = random.choices(blocktypes, k=num_blocks)
-        kchoices = random.choices(kernel_sizes, k=num_blocks)
-        echoices = random.choices(exp, k=num_blocks)
-        lchoices = random.choices(layers, k=num_blocks)
-        sechoices = random.choices(squeeze_excite_options, k=num_blocks)
-        for i in range(num_blocks):
+        bchoices = random.choices(self.bchoices, k=self.num_blocks)
+        for i in range(self.num_blocks):
             conf = [
                 bchoices[i],
-                echoices[i],
-                kchoices[i],
-                strides[i],
-                ich[i],
-                och[i],
-                lchoices[i],
-                sechoices[i],
+                _conf[0][i],
+                _conf[1][i],
+                self.strides[i],
+                self.ich[i],
+                self.och[i],
+                _conf[2][i],
+                _conf[3][i],
             ]
             layer_confs.append(conf)
-        searchables.append(layer_confs)
-    return searchables
+        return layer_confs
+
+    def random_searchable(self):
+        kchoices = random.choices(self.kernel_sizes, k=self.num_blocks)
+        echoices = random.choices(self.exp, k=self.num_blocks)
+        lchoices = random.choices(self.layers, k=self.num_blocks)
+        lchoices[-2] = random.choice([1, 2, 3, 4])  # 6th block to conform to effnetb0
+        sechoices = random.choices(self.squeeze_excite_options, k=self.num_blocks)
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
+
+    def efficientnet_b0_conf(self):
+        # Used efficientnet_b0 as baseline architecture to compared searched results against
+        kchoices = [3, 3, 5, 3, 5, 5, 3]
+        echoices = [1, 6, 6, 6, 6, 6, 6]
+        lchoices = [1, 2, 2, 3, 3, 4, 1]
+        sechoices = [True for i in range(self.num_blocks)]
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
+
+    def custom_searchable(self, e, k, la, se):
+        return self.searchable_from_conf([e, k, la, se])
+
+    def n_random_searchables(self, n, seed):
+        random.seed(seed)
+        searchables = [self.random_searchable() for _ in range(n)]
+        return searchables
+
+    def effnet_zcu102_a(self):
+        # Searched result zcu102 model a with acc = 77.698
+        # wandb eval run at https://wandb.ai/europa1610/NASBenchFPGA/runs/6sf5epkw?workspace=user-europa1610
+        echoices = [4, 6, 6, 6, 6, 6, 6]
+        kchoices = [3, 5, 5, 5, 5, 5, 5]
+        lchoices = [2, 1, 3, 3, 3, 4, 3]
+        sechoices = [False, False, False, False, False, False, True]
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
+
+    def effnet_zcu102_t(self):
+        # Searched result zcu102 model b with acc = 76.602
+        # wandb eval run at https://wandb.ai/europa1610/NASBenchFPGA/runs/22r1luie?workspace=user-europa1610
+        echoices = [1, 6, 6, 6, 6, 6, 6]
+        kchoices = [3, 3, 5, 3, 3, 5, 5]
+        lchoices = [1, 2, 3, 1, 3, 4, 3]
+        sechoices = [False, False, False, False, True, False, False]
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
+
+    def effnet_zcu102_tt(self):
+        # Searched result zcu102 model c with acc = 75.048
+        # wandb eval run at https://wandb.ai/europa1610/NASBenchFPGA/runs/d03umktt?workspace=user-europa1610
+        echoices = [1, 6, 6, 6, 6, 6, 6]
+        kchoices = [3, 3, 5, 5, 5, 5, 5]
+        lchoices = [2, 1, 3, 3, 2, 4, 1]
+        sechoices = [False, False, False, False, False, False, False]
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
+
+    def effnet_vck190_a(self):
+        # Searched result vck190 model a with acc = 77.56800079
+        # wandb eval run at https://wandb.ai/europa1610/NASBenchFPGA/runs/ys2vsx8i?workspace=user-europa1610
+        echoices = [1, 6, 6, 6, 6, 6, 6]
+        kchoices = [5, 3, 5, 5, 5, 5, 5]
+        lchoices = [1, 2, 3, 3, 2, 4, 3]
+        sechoices = [False, False, False, True, False, True, True]
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
+
+    def effnet_vck190_t(self):
+        # Searched result vck190 model b with acc = 76.6559906
+        # wandb eval run https://wandb.ai/europa1610/NASBenchFPGA/runs/vaxavbx1?workspace=user-europa1610
+        echoices = [1, 6, 6, 6, 6, 6, 6]
+        kchoices = [3, 3, 5, 5, 3, 5, 5]
+        lchoices = [1, 2, 2, 3, 2, 4, 2]
+        sechoices = [False, False, False, False, False, True, False]
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
+
+    def effnet_a100_a(self):
+        # Searched result A100-40GiB model a with acc = 77.81
+        # wandb eval run at https://wandb.ai/europa1610/NASBenchFPGA/runs/kfqttvsx?workspace=user-europa1610
+        echoices = [1, 6, 6, 6, 6, 6, 6]
+        kchoices = [3, 5, 5, 5, 5, 5, 5]
+        lchoices = [2, 2, 3, 1, 3, 4, 3]
+        sechoices = [False, False, False, True, True, True, True]
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
+
+    def effnet_a100_t(self):
+        # Searched result A100-40GiB model b with acc = 76.50999451
+        # wandb eval run at https://wandb.ai/europa1610/NASBenchFPGA/runs/x12gms30?workspace=user-europa1610
+        echoices = [1, 4, 6, 6, 6, 6, 6]
+        kchoices = [3, 3, 5, 5, 5, 5, 5]
+        lchoices = [1, 1, 2, 3, 2, 4, 2]
+        sechoices = [False, False, False, True, False, True, True]
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
+
+    def effnet_3090_a(self):
+        # Searched result rtx3090 model a with acc = 77.35799
+        # wandb eval run at https://wandb.ai/europa1610/NASBenchFPGA/runs/07hez0zj?workspace=user-europa1610
+        echoices = [1, 4, 6, 6, 6, 6, 6]
+        kchoices = [5, 5, 5, 5, 5, 5, 5]
+        lchoices = [1, 2, 3, 3, 3, 4, 2]
+        sechoices = [True, False, False, True, True, True, True]
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
+
+    def effnet_3090_t(self):
+        # Searched result same as that of A100 model b
+        return self.effnet_a100_t()
+
+    def effnet_tpuv3_a(self):
+        # Searched result TPUv3 model a with acc = 77.921
+        # wandb eval run at https://wandb.ai/europa1610/NASBenchFPGA/runs/w178pu9g?workspace=user-europa1610
+        echoices = [1, 4, 6, 6, 6, 6, 6]
+        kchoices = [5, 5, 5, 5, 5, 5, 5]
+        lchoices = [3, 3, 3, 3, 3, 4, 3]
+        sechoices = [False, True, True, False, True, True, False]
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
+
+    def effnet_tpuv3_t(self):
+        # Searched result TPUv3 model b with acc = 77.348
+        # wandb eval run at https://wandb.ai/europa1610/NASBenchFPGA/runs/f8q699br?workspace=user-europa1610
+        echoices = [1, 6, 6, 6, 6, 6, 6]
+        kchoices = [5, 5, 5, 5, 5, 5, 5]
+        lchoices = [1, 2, 3, 3, 3, 3, 3]
+        sechoices = [False, True, False, False, True, True, False]
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
