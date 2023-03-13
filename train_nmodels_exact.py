@@ -145,7 +145,7 @@ def main():
     args.use_wandb = config["logging"].getboolean("use_wandb")
     # model
     args.label_smoothing = config["model"].getfloat("label_smoothing")
-    args.design = config["model"]["design"]
+    args.activation_fn = config["model"]["activation_fn"]
     # dataloaders
     args.train_dataset = config["dataloader"]["train_dataset"]
     args.val_dataset = config["dataloader"]["val_dataset"]
@@ -156,7 +156,6 @@ def main():
     args.train_batch_size = config["trainval"].getint("train_batch_size")
     args.val_batch_size = config["trainval"].getint("val_batch_size")
     args.val_resolution = config["trainval"].getint("val_resolution")
-    args.lr_tta = config["trainval"].getboolean("lr_tta")
     args.min_res = config["trainval"].getint("min_res")
     args.max_res = config["trainval"].getint("max_res")
     args.start_ramp = config["trainval"].getint("start_ramp")
@@ -228,20 +227,18 @@ def main():
     np.set_printoptions(precision=4)
     if global_rank == 0:
         utils.create_exp_dir(
-            args.save, scripts_to_save=glob.glob("**/*.py", recursive=True)
+            args.save, scripts_to_save=None  # glob.glob("**/*.py", recursive=True)
         )
-    if args.distributed:
-        dist.barrier()
-    log_format = f"%(asctime)s - Rank {args.global_rank} - %(message)s"
-    logging.basicConfig(
-        stream=sys.stdout,
-        level=logging.INFO,
-        format=log_format,
-        datefmt="%m/%d %I:%M:%S %p",
-    )
-    fh = logging.FileHandler(os.path.join(args.save, f"log_rank{args.global_rank}.txt"))
-    fh.setFormatter(logging.Formatter(log_format))
-    logging.getLogger().addHandler(fh)
+        log_format = f"%(asctime)s - Rank {args.global_rank} - %(message)s"
+        logging.basicConfig(
+            stream=sys.stdout,
+            level=logging.INFO,
+            format=log_format,
+            datefmt="%m/%d %I:%M:%S %p",
+        )
+        fh = logging.FileHandler(os.path.join(args.save, f"log_rank{args.global_rank}.txt"))
+        fh.setFormatter(logging.Formatter(log_format))
+        logging.getLogger().addHandler(fh)
 
     wandb_con = None
     wandb_art = None
@@ -261,9 +258,9 @@ def main():
             dir=wandb_metadata_dir,
             group="train_models_grid_exact",
         )
-        wandb_art = wandb.Artifact(name=f"train-code-jobid{job_id}", type="code")
-        wandb_art.add_dir(os.path.join(args.save, "scripts"))
-        wandb_con.log_artifact(wandb_art)
+        # wandb_art = wandb.Artifact(name=f"train-code-jobid{job_id}", type="code")
+        # wandb_art.add_dir(os.path.join(args.save, "scripts"))
+        # wandb_con.log_artifact(wandb_art)
         wandb_con.config.update(args)
         logging.info("Saving py files to wandb...")
         wandb_con.save("./*.py")
@@ -298,12 +295,14 @@ def main():
             designs.append(value[0])
     m = 0
     # models_to_eval = 16
-    seeds_to_eval = [1]
+    seeds_to_eval = [2]
 
     train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
     criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
         f"cuda:{local_rank}"
     )
+    design = searchables.Searchables().efficientnet_b0_conf()
+    designs = [design]
     # designs = searchables.NRandomSearchables(models_to_eval, args.seed)
     for design in designs:
         last_seed = False
@@ -329,7 +328,7 @@ def main():
                 args.seed,
                 np.array(args.design),
             )
-            activation_fn, mode = "silu", "train"
+            activation_fn, mode = args.activation_fn, "train"
             args.macs, args.params = None, None
             if args.global_rank == 0:
                 args.macs, args.params = profile_model(
@@ -339,7 +338,6 @@ def main():
                     mode=mode,
                     local_rank=args.local_rank,
                 )
-            rank_trainables = [False] * args.world_size
             mem, trainable = profile_memory(
                 args.design,
                 activation_fn,
@@ -350,13 +348,6 @@ def main():
             )
             if mem > 22.0:
                 print(f"Memory required {mem} greater than 22.0 GiB threshold...")
-                trainable = False
-            rank_trainables[args.global_rank] = trainable
-            rank_trainables = torch.Tensor([rank_trainables])
-            torch.distributed.all_reduce(
-                rank_trainables, op=torch.distributed.ReduceOp.SUM
-            )
-            if not rank_trainables.all():
                 trainable = False
             else:
                 trainable = True

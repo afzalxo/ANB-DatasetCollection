@@ -254,7 +254,7 @@ def train_x_epochs(
                 commit = True if epoch <= _epochs - 4 else False
                 wandb_con.log({"t_acc": train_acc, "t_loss": train_obj}, commit=commit)
         # validation
-        if epoch == _epochs - 1:
+        if epoch > _epochs - 4:
             valid_acc_top1, valid_acc_top5, valid_obj = infer(
                 valid_queue,
                 model,
@@ -267,7 +267,6 @@ def train_x_epochs(
                 return [0, 0, 0, 0, 0, False]
             # logging.info('Epoch %d, Valid_acc_top1 %f, Valid_acc_top5 %f, Best_top1 %f, Best_top5 %f', epoch, valid_acc_top1, valid_acc_top5, best_acc_top1, best_acc_top5)
             avg_top1_val, avg_top5_val = valid_acc_top1, valid_acc_top5
-
             if global_rank == 0 and wandb_con is not None:
                 commit = True if epoch < _epochs - 1 else False
                 wandb_con.log(
@@ -347,7 +346,6 @@ def train_x_epochs(
             "max_res": args.max_res,
             "start_ramp": args.start_ramp,
             "end_ramp": args.end_ramp,
-            "train_portion": args.train_portion,
         }
         artifact_dict = {
             "key": args.model_num,

@@ -140,7 +140,7 @@ def main():
     args.use_wandb = config["logging"].getboolean("use_wandb")
     # model
     args.label_smoothing = config["model"].getfloat("label_smoothing")
-    args.design = config["model"]["design"]
+    args.activation_fn = config["model"]["activation_fn"]
     # dataloaders
     args.train_dataset = config["dataloader"]["train_dataset"]
     args.val_dataset = config["dataloader"]["val_dataset"]
@@ -260,9 +260,9 @@ def main():
             settings=wandb.Settings(code_dir="."),
             dir=wandb_metadata_dir,
         )
-        wandb_art = wandb.Artifact(name=f"train-code-jobid{job_id}", type="code")
-        wandb_art.add_dir(os.path.join(args.save, "scripts"))
-        wandb_con.log_artifact(wandb_art)
+        # wandb_art = wandb.Artifact(name=f"train-code-jobid{job_id}", type="code")
+        # wandb_art.add_dir(os.path.join(args.save, "scripts"))
+        # wandb_con.log_artifact(wandb_art)
         wandb_con.config.update(args)
         logging.info("Saving py files to wandb...")
         wandb_con.save("./*.py")
@@ -277,9 +277,6 @@ def main():
     else:
         wandb_con = None
         wandb_art = None
-
-    if args.distributed:
-        dist.barrier()
 
     logging.info("args = %s", args)
 
@@ -304,7 +301,7 @@ def main():
             args.model_num,
             np.array(args.design),
         )
-        activation_fn, mode = "relu", "train"
+        activation_fn, mode = args.activation_fn, "train"
         args.macs, args.params = None, None
         if args.global_rank == 0:
             args.macs, args.params = profile_model(
@@ -325,8 +322,8 @@ def main():
         if mem > 22.0:
             print(f"Memory required {mem} greater than 22.0 GiB threshold...")
             trainable = False
-        if args.distributed:
-            trainable = utils.reduce_tensor(trainable, args.world_size)
+        else:
+            trainable = True
         if not trainable:
             logging.info(
                 "Design not trainable due to GPU mem overflows...\nMoving to next design..."
