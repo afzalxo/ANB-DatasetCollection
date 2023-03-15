@@ -185,9 +185,9 @@ def main():
         setup_for_distributed(global_rank == 0)
     elif args.distributed and args.cluster == "local":
         local_rank = int(os.environ["LOCAL_RANK"])
-        global_rank = int(os.environ["LOCAL_RANK"])
+        global_rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
-        job_id = 10001  # int(os.getpid())
+        job_id = int(os.getpid())
         ip = "127.0.0.1"
         setup_for_distributed(global_rank == 0)
     else:
@@ -256,7 +256,7 @@ def main():
             name=args.note + f"_{args.job_id}",
             settings=wandb.Settings(code_dir="."),
             dir=wandb_metadata_dir,
-            group="train_models_grid_exact",
+            group="ablation1_underfit",
         )
         # wandb_art = wandb.Artifact(name=f"train-code-jobid{job_id}", type="code")
         # wandb_art.add_dir(os.path.join(args.save, "scripts"))
@@ -285,26 +285,24 @@ def main():
     args.in_memory = True
     train_success = True
     last_seed = False
-    keys_to_eval = [15]
-    designs = []
-    with open('models_grid_abs.tor', 'rb') as file:
-        data = pickle.load(file)
-    arch_dict = data['arch_dict']
-    for key, value in arch_dict.items():
-        if key in keys_to_eval:
-            designs.append(value[0])
     m = 0
-    # models_to_eval = 16
+    models_to_eval = 100
     seeds_to_eval = [2]
+    skipped_designs = []
 
     train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
     criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
         f"cuda:{local_rank}"
     )
-    design = searchables.Searchables().efficientnet_b0_conf()
-    designs = [design]
+    # design = searchables.Searchables().efficientnet_b0_conf()
+    # designs = [design]
     # designs = searchables.NRandomSearchables(models_to_eval, args.seed)
-    for design in designs:
+    for m in range(84, 100):
+        with open('ablation1_randmodels.pkl', 'rb') as file:
+            designs = pickle.load(file)
+        args.design = designs[m]
+        if m == models_to_eval:
+            break
         last_seed = False
         for seed in seeds_to_eval:
             args.seed = seed
@@ -318,7 +316,7 @@ def main():
             random.seed(args.seed)
 
             args.model_num = m
-            args.design = design
+            # args.design = design
             if args.distributed:
                 dist.barrier()
             logging.info(
@@ -338,7 +336,8 @@ def main():
                     mode=mode,
                     local_rank=args.local_rank,
                 )
-            mem, trainable = profile_memory(
+            '''
+            trainable = profile_memory(
                 args.design,
                 activation_fn,
                 mode,
@@ -356,6 +355,7 @@ def main():
                     "Design not trainable due to GPU mem overflows...\nMoving to next design..."
                 )
                 continue
+            '''
             if args.distributed:
                 dist.barrier()
             model = Network(design=args.design, activation_fn=activation_fn, mode=mode)
@@ -399,13 +399,16 @@ def main():
                 str(train_success),
                 valid_t1,
             )
+            if not train_success:
+                skipped_designs.append(args.design)
+                logging.info("Skipped designs: %s", str(skipped_designs))
             if args.distributed:
                 dist.barrier()
             del model, optimizer, scheduler
             torch.cuda.empty_cache()
             gc.collect()
-            if train_success and last_seed:
-                m += 1
+            # if train_success and last_seed:
+                # m += 1
 
 
 if __name__ == "__main__":

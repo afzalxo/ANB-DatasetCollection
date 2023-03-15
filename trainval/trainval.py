@@ -359,8 +359,8 @@ def train_x_epochs(
             import wandb
 
             wandb_art = wandb.Artifact(
-                # name=f"models-grid-proxified-jobid{args.job_id}-model{args.model_num}",
-                name=f"models-searchrecipe-jobid{args.job_id}-{args.arch_epoch}-{args.episode}",
+                name=f"models-ablation1-exact-jobid{args.job_id}-model{args.model_num}",
+                # name=f"models-searchrecipe-jobid{args.job_id}-{args.arch_epoch}-{args.episode}",
                 type="model",
                 metadata={
                     "training_config": training_config_dict,

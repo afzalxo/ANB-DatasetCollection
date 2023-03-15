@@ -54,6 +54,13 @@ class Searchables:
         searchables = [self.random_searchable() for _ in range(n)]
         return searchables
 
+    def test_searchable(self):
+        kchoices = [5, 5, 5, 5, 5, 5, 5]
+        echoices = [6, 6, 6, 6, 6, 6, 6]
+        lchoices = [3, 3, 3, 3, 3, 4, 3]
+        sechoices = [True for i in range(self.num_blocks)]
+        return self.searchable_from_conf([echoices, kchoices, lchoices, sechoices])
+
     def effnet_zcu102_a(self):
         # Searched result zcu102 model a with acc = 77.698
         # wandb eval run at https://wandb.ai/europa1610/NASBenchFPGA/runs/6sf5epkw?workspace=user-europa1610
