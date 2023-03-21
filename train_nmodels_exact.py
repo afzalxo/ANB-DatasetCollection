@@ -35,6 +35,8 @@ def setup_distributed(rank, local_rank, address, port, world_size, cluster):
     # os.environ['NCCL_IB_DISABLE'] = '1'
     # os.environ['NCCL_SOCKET_IFNAME'] = 'eth0'
     print("Setting up dist training rank %d" % rank)
+    # if os.path.exists('/home/aahmadaa/newf1'):
+    #    os.system('rm /home/aahmadaa/newf1')
     if cluster == "local":
         init_method = "file:///home/aahmadaa/newf1"
     elif cluster == "tacc":
@@ -276,9 +278,6 @@ def main():
         wandb_con = None
         wandb_art = None
 
-    if args.distributed:
-        dist.barrier()
-
     logging.info("args = %s", args)
 
     # FFCV loader here
@@ -287,7 +286,7 @@ def main():
     last_seed = False
     m = 0
     models_to_eval = 100
-    seeds_to_eval = [2]
+    seeds_to_eval = [1]
     skipped_designs = []
 
     train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
@@ -297,7 +296,9 @@ def main():
     # design = searchables.Searchables().efficientnet_b0_conf()
     # designs = [design]
     # designs = searchables.NRandomSearchables(models_to_eval, args.seed)
-    for m in range(84, 100):
+    # with open('resume_index.txt', 'r') as fh:
+    #    starting_index = int(fh.read())
+    for m in range(36, 100):
         with open('ablation1_randmodels.pkl', 'rb') as file:
             designs = pickle.load(file)
         args.design = designs[m]
@@ -317,8 +318,6 @@ def main():
 
             args.model_num = m
             # args.design = design
-            if args.distributed:
-                dist.barrier()
             logging.info(
                 "Job ID: %d, Model Number: %d, Seed: %d, Design: \n%s",
                 args.job_id,
@@ -407,6 +406,8 @@ def main():
             del model, optimizer, scheduler
             torch.cuda.empty_cache()
             gc.collect()
+            # with open('resume_index.txt', 'w') as fh:
+            #    fh.write(str(m+1))
             # if train_success and last_seed:
                 # m += 1
 

@@ -106,7 +106,6 @@ def main():
     args.use_wandb = config["logging"].getboolean("use_wandb")
     # model
     args.label_smoothing = config["model"].getfloat("label_smoothing")
-    args.design = config["model"]["design"]
     # dataloaders
     args.train_dataset = config["dataloader"]["train_dataset"]
     args.val_dataset = config["dataloader"]["val_dataset"]
@@ -117,7 +116,6 @@ def main():
     args.train_batch_size = config["trainval"].getint("train_batch_size")
     args.val_batch_size = config["trainval"].getint("val_batch_size")
     args.val_resolution = config["trainval"].getint("val_resolution")
-    args.lr_tta = config["trainval"].getboolean("lr_tta")
     args.min_res = config["trainval"].getint("min_res")
     args.max_res = config["trainval"].getint("max_res")
     args.start_ramp = config["trainval"].getint("start_ramp")
@@ -264,7 +262,10 @@ def main():
     job_ids = [10474, 10475, 10476, 10477, 10478, 10479, 10000, 10481, 10001, 10523, 10522, 10525]
     job_ids = [10527, 10528, 10529, 10530, 10531, 10532, 11996, 11998, 11999, 12000, 12001, 12003, 12004]
 
-
+    # Ablation Jobs here
+    job_ids = [13470, 13492, 13496, 13526, 13530]
+    job_ids = [13555]
+    missed_version = 0
     table_rows = []
     args.min_res, args.max_res = 224, 224
     train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
@@ -273,12 +274,14 @@ def main():
         writer = csv.writer(fh)
         for jid in job_ids:
             finished = False
+            version = missed_version
             while not finished:
                 try:
                     finished = False
                     api = wandb.Api()
                     artifact = api.artifact(
-                        f"europa1610/NASBenchFPGA/models-random-jobid{jid}-model{version}:v0",
+                        # f"europa1610/NASBenchFPGA/models-random-jobid{jid}-model{version}:v0",
+                        f"europa1610/NASBenchFPGA/models-ablation1-exact-jobid{jid}-model{version}:v0",
                         type="model",
                     )
                     md = artifact.metadata["model_metadata"]
@@ -286,6 +289,10 @@ def main():
                     if len(args.design[0]) == 7:
                         for p in range(7):
                             args.design[p].append(False)
+                    exps = list(np.array(md['architecture'])[:, 1])
+                    ker = list(np.array(md['architecture'])[:, 2])
+                    layers = list(np.array(md['architecture'])[:, 6])
+                    se = list(np.array(md['architecture'])[:, 7])
                     # args.design = (searchables.RandomSearchable())
                     logging.info(
                         "Job ID: %d, Model Number: %d, MACS: %f, MParams %f, Design: \n%s",
@@ -316,7 +323,8 @@ def main():
                         dist.barrier()
                         model = torch.nn.parallel.DistributedDataParallel(model)
                         dist.barrier()
-                    mean_thr, std_thr = throughput_gpu(
+                    # mean_thr, std_thr = throughput_gpu(
+                    measurements = throughput_gpu(
                         valid_queue, model, args
                     )
                     if args.distributed:
@@ -330,9 +338,15 @@ def main():
                         float(md["macs"]),
                         float(md["params"]),
                         abs(float(md["train_time"])),
-                        mean_thr,
-                        std_thr,
+                        # mean_thr,
+                        # std_thr,
                     ]
+                    row.extend(measurements)
+                    row.extend([int(b) for b in exps])
+                    row.extend([int(b) for b in ker])
+                    row.extend([int(b) for b in layers])
+                    row.extend([b for b in se])
+
                     table_rows.append(row)
                     writer.writerow(row)
                     fh.flush()
@@ -349,11 +363,14 @@ def main():
                     )
                     version += 1
                     missing_counter += 1
+                    if missing_counter == 1:
+                        missed_version = version
                     if missing_counter == 10:
                         print(f"Finished throughput measurements for job {jid}...")
                         finished = True
                         version = 0
                         missing_counter = 0
+    '''
     columns = [
         "Model Num",
         "Job ID",
@@ -372,6 +389,7 @@ def main():
     artifact = wandb.Artifact(f"throughput_dataset_{GPU_DEV}", "dataset")
     artifact.add(table, f"throughput_dataset_{GPU_DEV}")
     args.wandb_con.log_artifact(artifact)
+    '''
 
 
 if __name__ == "__main__":

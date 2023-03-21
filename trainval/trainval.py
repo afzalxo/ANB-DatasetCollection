@@ -494,7 +494,7 @@ def dry_run(design, platform, mode, criterion, args):
 def throughput_gpu(valid_queue, model, args, report_freq=100):
     model.eval()
     warmup_reps = 1
-    measurement_reps = 2
+    measurement_reps = 3
     total_time = 0
     rep_time = 0
     prev_rep_time = 0
@@ -551,4 +551,4 @@ def throughput_gpu(valid_queue, model, args, report_freq=100):
     print(mean_syn, std_syn)
     print('==='*10)
     """
-    return mean_thr, std_thr
+    return throughput_measurements# mean_thr, std_thr
