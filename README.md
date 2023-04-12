@@ -1,6 +1,6 @@
 ## Dataset Collection Pipelines for Surrogates
 
-This subdirectory contains files for the dataset collection which was utilized to train the surrogates. The dataset includes architectures randomly sampled from the EfficientNets search space, their accuracies, and their device-specific performance metrics such as throughput on all devices, and latency on the FPGA devices. For details on the search-space utilized in this benchmark, please see [TODO]()[]. The architectures in the dataset are sampled randomly from the search space. We collected this dataset for a total of [TODO] architectures.
+This subdirectory contains files for the dataset collection which was utilized to train the surrogates. The dataset includes architectures randomly sampled from the MnasNet search space, their accuracies, and their device-specific performance metrics such as throughput on all devices, and latency on the FPGA devices. For details on the search-space utilized in this benchmark, please see Appendix. B of the paper. The architectures in the dataset are sampled randomly from the search space. We collected this dataset for roughly 5.2k architectures.
 
 * Accuracy Collection on ImageNet (Proxified)
 * Throughput/Latency Collection
@@ -10,11 +10,11 @@ This subdirectory contains files for the dataset collection which was utilized t
 
 ## Architecture, Accuracy Pairs using Training Proxies
 We collected a total of ~5k architecture and accuracy pairs on the ImageNet dataset using a host of proxies that reduce the training time to around ~3 GPU-hours per architecture, but incur a substantial accuracy degradation (around 10%) relative to a state-of-the-art training schemes that fully utilize augmentations, regularizations and other fancy training recipes. **A non-exhaustive list of proxies is as follows:**
-* [FFCV](https://github.com/libffcv/ffcv-imagenet/tree/main) dataloader with JPEG data compression. We compress the ImageNet dataset using parameters 1) 400px side length, 2) 100% JPEG encoded, and 3) Quality of 90 JPEG. Please see [FFCV ImageNet configurations](https://github.com/libffcv/ffcv-imagenet/tree/main) for details. We also provide the FFCV format train and validation sets, so dataset conversion steps can be avoided: Download Here: []().
+* [FFCV](https://github.com/libffcv/ffcv-imagenet/tree/main) dataloader with JPEG data compression. We compress the ImageNet dataset using parameters 1) 400px side length, 2) 100% JPEG encoded, and 3) Quality of 90 JPEG. Please see [FFCV ImageNet configurations](https://github.com/libffcv/ffcv-imagenet/tree/main) for details. To generate the FFCV ImageNet dataset, use the command: `./write_imagenet.sh 400 1.0 90` in FFCV ImageNet repository [here](https://github.com/libffcv/ffcv-imagenet). This would generate train and validation FFCV format imagenet dataset. Please point the `train_dataset` variable [here](https://github.com/afzalxo/ANB-DatasetCollection/blob/master/configs/conf_local.cfg) to the `train_400_0.50_90.ffcv` file that you generated, and `val_dataset` variable to the `val_400_0.50_90.ffcv` file.
 * Only 16 epochs of training per model.
-*  Batch size of 512 per GPU.
+* Batch size of 512 per GPU.
 * Progressive resizing similar to FFCV: 160px inputs for the first 12 epochs of training, then 192px until the end of training.
-* For detailed configurations, please see config file [here]().
+* For detailed configurations, please see config file [here](https://github.com/afzalxo/ANB-DatasetCollection/blob/master/configs/conf_local.cfg).
 
 ##### Hardware Setup: 
 We utilized 6 to 7 nodes on a SLURM cluster with 4 RTX 3090 GPUs per node. Since FFCV stores the dataset in memory, we recommend at least 64 GiB of RAM on each node for fast dataloading. Our nodes were fitted with 128 - 256 GiB of RAM each. Each node was responsible for training a subset of the total architectures, i.e., roughly 850 architectures per node. The dataset collection pipeline can hence be parallelized by using a large number of nodes. In our case, the accuracy dataset collection took around one month of continuous training on 24 - 28 GPUs. The scripts provided have to be run separately on each node. The `num_models` argument allows setting how many architectures the script will train.
@@ -23,7 +23,7 @@ We utilized 6 to 7 nodes on a SLURM cluster with 4 RTX 3090 GPUs per node. Since
 For dataset collection and experiment logging, we heavily rely on [wandb](wandb.ai). This is necessary given the huge compute cost of the project and task parallelization across multiple nodes, we needed to ensure that logging can be handled reliably, in a central location. We save each model's weights, training configurations, loss/accuracy curves, accuracy results, FLOPs/#Params metrics, and various other aspects of training on wandb as artifacts. After model training is finished on all the nodes, we use a script to obtain the architecture accuracy pairs from wandb for further processing. 
 
 ---
-To begin the dataset collection on a node with 4 GPUs, please run the following commands. The commands can be trivially adopted to run on nodes with more or less than 4 GPUs but the hyperparameters, such as learning rate and batch size, have to tuned appropriately. See config file [here]() for the hyperparameters utilized with our hardware configuration:
+To begin the dataset collection on a node with 4 GPUs, please run the following commands. The commands can be trivially adopted to run on nodes with more or less than 4 GPUs but the hyperparameters, such as learning rate and batch size, have to tuned appropriately. See config file [here](https://github.com/afzalxo/ANB-DatasetCollection/blob/master/configs/conf_local.cfg) for the hyperparameters utilized with our hardware configuration:
 
 First obtain your wandb API key so the code will have access to your wandb workspace:
 1. Go to wandb.ai and login to your account.
@@ -31,13 +31,14 @@ First obtain your wandb API key so the code will have access to your wandb works
 3. From the User Settings page, copy the API key. This API key is needed to log the experiments to wandb. We save the model weights, loss/accuracy plots, training configurations, and code files to wandb.ai for easy access in the future.
 
 Now we can begin training models randomly sampled from the search space: 
-`torchrun --nnodes=1 --nproc_per_node=4 train_nmodels_proxified.py --cfg_path configs/conf_local_proxified.cfg --num_models 850 --seed <seed> --wandb-api-key <API key here> --wandb-project <wandb project name> --wandb-entity <wandb username here>`
+
+```torchrun --nnodes=1 --nproc_per_node=4 train_nmodels_proxified.py --cfg_path configs/conf_local_proxified.cfg --num_models 850 --seed <seed> --wandb-api-key <API key here> --wandb-project <wandb project name> --wandb-entity <wandb username here>```
 
 The script will train 850 models on a node with 4 GPUs. Multiple instances of the script can be run in parallel using multiple nodes and running the above command with a different `seed` argument to parallelize the dataset collection. When the above command is executed, a new wandb.ai run will be created in your wandb workspace. The training progress can be observed in the training log and also on wandb.ai. 
 
 ###### Note: Due to node downtimes/maintenance/memory-overflows, we had to stop training multiple times and resume the dataset collection with a different seed each time. This does not impact the integrity of dataset collection since the architectures are sampled randomly. 
 
-After the training has finished, keep a note of the job-id which is assigned to your wandb run as postfix to the name of the run. This job ID, along with wandb user info can be used to obtain the dataset from wandb. Script TODO collects the dataset from wandb and generates a csv file containing the architectures, their FLOPs, # of parameters, accuracy etc.
+After the training has finished, keep a note of the job-id which is assigned to your wandb run as postfix to the name of the run. This job ID, along with wandb user info can be used to obtain the dataset from wandb. Script <TODO> collects the dataset from wandb and generates a csv file containing the architectures, their FLOPs, # of parameters, accuracy etc.
 
 ###### Caveat: The FFCV dataloader is slow in the first epoch since it loads the dataset to the memory. Please be patient.
 

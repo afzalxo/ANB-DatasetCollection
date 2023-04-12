@@ -35,12 +35,14 @@ def setup_distributed(rank, local_rank, address, port, world_size, cluster):
     # os.environ['NCCL_SOCKET_IFNAME'] = 'eth0'
     print("Setting up dist training rank %d" % rank)
     if cluster == "local":
-        init_method = "file:///home/aahmadaa/newf1"
+        home_dir = os.getcwd()
+        file_path = os.path.join(home_dir, "dist_pg")
+        init_method = f"file://{file_path}"
     elif cluster == "tacc":
         init_method = "env://"
 
     dist.init_process_group(
-        "gloo", init_method=init_method, rank=rank, world_size=world_size
+        "nccl", init_method=init_method, rank=rank, world_size=world_size
     )
     torch.cuda.set_device(local_rank)
 
@@ -104,7 +106,7 @@ def profile_memory(design, activation_fn, mode, batch_size, res, rank):
 def profile_model(input_size, design, activation_fn, mode, local_rank):
     model_temp = Network(design=design, activation_fn=activation_fn, mode=mode)
     input = torch.randn(input_size)  # .to(f'cuda:{local_rank}')
-    macs, params = profile(model_temp, inputs=(input,))
+    macs, params = profile(model_temp, inputs=(input,), verbose=False)
     macs, params = macs / 1000000, params / 1000000
     del model_temp
     # print(f"MFLOPS: {macs}, MPARAMS: {params}")
@@ -125,6 +127,11 @@ def main():
 
     parser = argparse.ArgumentParser("")
     parser.add_argument("--cfg_path")
+    parser.add_argument("--wandb-api-key", type=str)
+    parser.add_argument("--wandb-project", type=str)
+    parser.add_argument("--wandb-entity", type=str)
+    parser.add_argument("--seed", type=int, default=2)
+    parser.add_argument("--num_models", type=int, default=850)
     args = parser.parse_args()
 
     cfg_path = args.cfg_path
@@ -161,7 +168,8 @@ def main():
         args.start_ramp = config["trainval"].getint("start_ramp")
     if not hasattr(args, "end_ramp"):
         args.end_ramp = config["trainval"].getint("end_ramp")
-    args.seed = config["trainval"].getint("seed")
+    if not hasattr(args, "seed"):
+        args.seed = config["trainval"].getint("seed")
     # optimizer
     args.lr = config["optimizer"].getfloat("lr")
     args.weight_decay = config["optimizer"].getfloat("weight_decay")
@@ -250,12 +258,12 @@ def main():
     if args.use_wandb and global_rank == 0:
         wandb_metadata_dir = args.save
         import wandb
-        os.environ["WANDB_API_KEY"] = "166a45fa2ad2b2db9ec555119b273a3a9bdacc41"
-        os.environ["WANDB_ENTITY"] = "europa1610"
-        os.environ["WANDB_PROJECT"] = "NASBenchFPGA"
+        os.environ["WANDB_API_KEY"] = args.wandb_api_key
+        os.environ["WANDB_ENTITY"] = args.wandb_entity
+        os.environ["WANDB_PROJECT"] = args.wandb_project
         wandb_con = wandb.init(
-            project="NASBenchFPGA",
-            entity="europa1610",
+            project=args.wandb_project,
+            entity=args.wandb_entity,
             name=args.note + f"_{args.job_id}",
             settings=wandb.Settings(code_dir="."),
             dir=wandb_metadata_dir,
@@ -284,13 +292,12 @@ def main():
     args.in_memory = True
     train_success = True
     m = 0
-    models_to_eval = 1
 
     train_queue, valid_queue, dl = get_ffcv_loaders(local_rank, args)
     criterion = CrossEntropyLabelSmooth(args.CLASSES, args.label_smoothing).to(
         f"cuda:{local_rank}"
     )
-    while m < models_to_eval:
+    while m < args.num_models:
         args.model_num = m
         if args.distributed:
             dist.barrier()
