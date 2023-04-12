@@ -253,7 +253,6 @@ def main():
         logging.getLogger().addHandler(fh)
 
     wandb_con = None
-    wandb_art = None
     wandb_metadata_dir = None
     if args.use_wandb and global_rank == 0:
         wandb_metadata_dir = args.save
@@ -284,7 +283,6 @@ def main():
         args.wandb_con = wandb_con
     else:
         wandb_con = None
-        wandb_art = None
 
     logging.info("args = %s", args)
 
@@ -301,7 +299,7 @@ def main():
         args.model_num = m
         if args.distributed:
             dist.barrier()
-        args.design = searchables.Searchables().efficientnet_b0_conf()
+        args.design = searchables.Searchables().random_searchable()  # efficientnet_b0_conf()
         logging.info(
             "Job ID: %d, Model Number: %d, Design: \n%s",
             args.job_id,
