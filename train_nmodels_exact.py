@@ -298,7 +298,7 @@ def main():
     # designs = searchables.NRandomSearchables(models_to_eval, args.seed)
     # with open('resume_index.txt', 'r') as fh:
     #    starting_index = int(fh.read())
-    for m in range(36, 100):
+    for m in range(0, 100):
         with open('ablation1_randmodels.pkl', 'rb') as file:
             designs = pickle.load(file)
         args.design = designs[m]
