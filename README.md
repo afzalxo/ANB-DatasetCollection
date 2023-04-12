@@ -44,7 +44,7 @@ Next, obtain your wandb API key so the code will have access to your wandb works
 Now we can begin training models randomly sampled from the search space: 
 
 ```bash
-torchrun --nnodes=1 --nproc_per_node=4 train_nmodels_proxified.py --cfg_path configs/conf_local_proxified.cfg --num_models 850 --seed <seed> --wandb-api-key <API key here> --wandb-project <wandb project name> --wandb-entity <wandb username here>
+torchrun --nnodes=1 --nproc_per_node=4 train_nmodels_proxified.py --cfg_path configs/conf_local.cfg --num_models 850 --seed <seed> --wandb-api-key <API key here> --wandb-project <wandb project name> --wandb-entity <wandb username here>
 ```
 
 The script will train 850 models on a node with 4 GPUs. Multiple instances of the script can be run in parallel using multiple nodes and running the above command with a different `seed` argument to parallelize the dataset collection. When the above command is executed, a new wandb.ai run will be created in your wandb workspace. The training progress can be observed in the training log and also on wandb.ai. 
@@ -59,6 +59,8 @@ After the training has finished, keep a note of the job-id which is assigned to 
 #### FPGAs
 This requires some familiarity with [Vitis AI](https://github.com/Xilinx/Vitis-AI/tree/2.5) and FPGA design flow. Please make sure Vitis AI and `vai_q_pytorch` are installed on the host machine. `vai_q_pytorch` is an 8-bit quantizer that comes bundled with Vitis AI inside the provided docker containers, so installing Vitis-AI also installs the quantizer. We utilized [Vitis AI 2.5](https://github.com/Xilinx/Vitis-AI/tree/2.5) since version 3.0 was released only recently, however the version update does not have any impact on the performance measurements we made. We used two FPGAs 1) [Zynq UltraScale+ MPSoC ZCU102](https://www.xilinx.com/products/boards-and-kits/ek-u1-zcu102-g.html) and 2) [Versal AI Core Series VCK190](https://www.xilinx.com/products/boards-and-kits/vck190.html). The corresponding DPUs are [DPUCZDX8G_ISA1_B4096](https://docs.xilinx.com/r/en-US/pg338-dpu?tocId=~72l0MosWV8p9MbkDlnw8Q) for ZCU102 and [DPUCVDX8G_ISA3_C32B3](https://docs.xilinx.com/r/en-US/pg389-dpucvdx8g/Introduction) for VCK190. Other FPGA devices such as VCK5000 and ZCU104 are also supported, while some server FPGAs such as Alveo U50/U250/U280 are not supported since their DPUs currently do not support the `hard sigmoid` operation utilized by the squeeze-excite operation 
 ######  (Perhaps these 'unsupported' FPGAs can still be used but by sampling only the architectures from the search space that do not utilize Squeeze-Excitation layers in any of the blocks. This however considerably reduces the size of search space to about $10^9$ architectures only. The search results on the supported FPGAs using multi-objective optimization on accuracy+throughput show that FPGA-targeted models do not prefer the squeeze-excitation anyways owing to its memory-bound nature).
+
+###### Also please note that FPGA code in the dir `fpga_code` requires Vitis-AI installed on the host machine and FPGA setup with the petalinux. Please feel free to file an issue if you need some help with these steps.
 
 We offer the scripts for: 1) Quantization and compilation for the two FPGAs, and 2) Running compiled models on the FPGAs. 
 
