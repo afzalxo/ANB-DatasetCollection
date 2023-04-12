@@ -10,16 +10,7 @@ This subdirectory contains files for the dataset collection which was utilized t
 
 ## Architecture, Accuracy Pairs using Training Proxies
 We collected a total of ~5k architecture and accuracy pairs on the ImageNet dataset using a host of proxies that reduce the training time to around ~3 GPU-hours per architecture, but incur a substantial accuracy degradation (around 10%) relative to a state-of-the-art training schemes that fully utilize augmentations, regularizations and other fancy training recipes. **A non-exhaustive list of proxies is as follows:**
-* [FFCV](https://github.com/libffcv/ffcv-imagenet/tree/main) dataloader with JPEG data compression. We compress the ImageNet dataset using parameters 1) 400px side length, 2) 100% JPEG encoded, and 3) Quality of 90 JPEG. Please see [FFCV ImageNet configurations](https://github.com/libffcv/ffcv-imagenet/tree/main) for details. To generate the FFCV ImageNet dataset, use the command: `./write_imagenet.sh 400 1.0 90` in FFCV ImageNet repository [here](https://github.com/libffcv/ffcv-imagenet). This would generate train and validation FFCV format imagenet dataset. Please point the `train_dataset` variable [here](https://github.com/afzalxo/ANB-DatasetCollection/blob/master/configs/conf_local.cfg) to the `train_400_0.50_90.ffcv` file that you generated, and `val_dataset` variable to the `val_400_0.50_90.ffcv` file.
-
-```ini
-...
-[dataloader]
-train_dataset=<path/to/train_400_0.50_90.ffcv>
-val_dataset=<path/to/val_400_0.50_90.ffcv>
-...
-```
-
+* [FFCV](https://github.com/libffcv/ffcv-imagenet/tree/main) dataloader with JPEG data compression. We compress the ImageNet dataset using parameters 1) 400px side length, 2) 100% JPEG encoded, and 3) Quality of 90 JPEG. Please see [FFCV ImageNet configurations](https://github.com/libffcv/ffcv-imagenet/tree/main) for details. 
 * Only 16 epochs of training per model.
 * Batch size of 512 per GPU.
 * Progressive resizing similar to FFCV: 160px inputs for the first 12 epochs of training, then 192px until the end of training.
@@ -34,14 +25,27 @@ For dataset collection and experiment logging, we heavily rely on [wandb](wandb.
 ---
 To begin the dataset collection on a node with 4 GPUs, please run the following commands. The commands can be trivially adopted to run on nodes with more or less than 4 GPUs but the hyperparameters, such as learning rate and batch size, have to tuned appropriately. See config file [here](https://github.com/afzalxo/ANB-DatasetCollection/blob/master/configs/conf_local.cfg) for the hyperparameters utilized with our hardware configuration:
 
-First obtain your wandb API key so the code will have access to your wandb workspace:
+First generate FFCV ImageNet dataset using FFCV:
+To generate the FFCV ImageNet dataset, use the command: `./write_imagenet.sh 400 1.0 90` in FFCV ImageNet repository [here](https://github.com/libffcv/ffcv-imagenet). This would generate train and validation FFCV format imagenet dataset. Please point the `train_dataset` variable [here](https://github.com/afzalxo/ANB-DatasetCollection/blob/master/configs/conf_local.cfg) to the `train_400_0.50_90.ffcv` file that you generated, and `val_dataset` variable to the `val_400_0.50_90.ffcv` file as follows:
+
+```ini
+...
+[dataloader]
+train_dataset=<path/to/train_400_0.50_90.ffcv>
+val_dataset=<path/to/val_400_0.50_90.ffcv>
+...
+```
+
+Next, obtain your wandb API key so the code will have access to your wandb workspace:
 1. Go to wandb.ai and login to your account.
 2. From the top-right corner of the screen, select your profile icon and then go to Settings. 
 3. From the User Settings page, copy the API key. This API key is needed to log the experiments to wandb. We save the model weights, loss/accuracy plots, training configurations, and code files to wandb.ai for easy access in the future.
 
 Now we can begin training models randomly sampled from the search space: 
 
-```torchrun --nnodes=1 --nproc_per_node=4 train_nmodels_proxified.py --cfg_path configs/conf_local_proxified.cfg --num_models 850 --seed <seed> --wandb-api-key <API key here> --wandb-project <wandb project name> --wandb-entity <wandb username here>```
+```bash
+torchrun --nnodes=1 --nproc_per_node=4 train_nmodels_proxified.py --cfg_path configs/conf_local_proxified.cfg --num_models 850 --seed <seed> --wandb-api-key <API key here> --wandb-project <wandb project name> --wandb-entity <wandb username here>
+```
 
 The script will train 850 models on a node with 4 GPUs. Multiple instances of the script can be run in parallel using multiple nodes and running the above command with a different `seed` argument to parallelize the dataset collection. When the above command is executed, a new wandb.ai run will be created in your wandb workspace. The training progress can be observed in the training log and also on wandb.ai. 
 
