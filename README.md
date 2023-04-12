@@ -12,7 +12,6 @@ This subdirectory contains files for the dataset collection which was utilized t
 We collected a total of ~5k architecture and accuracy pairs on the ImageNet dataset using a host of proxies that reduce the training time to around ~3 GPU-hours per architecture, but incur a substantial accuracy degradation (around 10%) relative to a state-of-the-art training schemes that fully utilize augmentations, regularizations and other fancy training recipes. **A non-exhaustive list of proxies is as follows:**
 * [FFCV](https://github.com/libffcv/ffcv-imagenet/tree/main) dataloader with JPEG data compression. We compress the ImageNet dataset using parameters 1) 400px side length, 2) 100% JPEG encoded, and 3) Quality of 90 JPEG. Please see [FFCV ImageNet configurations](https://github.com/libffcv/ffcv-imagenet/tree/main) for details. To generate the FFCV ImageNet dataset, use the command: `./write_imagenet.sh 400 1.0 90` in FFCV ImageNet repository [here](https://github.com/libffcv/ffcv-imagenet). This would generate train and validation FFCV format imagenet dataset. Please point the `train_dataset` variable [here](https://github.com/afzalxo/ANB-DatasetCollection/blob/master/configs/conf_local.cfg) to the `train_400_0.50_90.ffcv` file that you generated, and `val_dataset` variable to the `val_400_0.50_90.ffcv` file.
 
-<pre>
 ```ini
 ...
 [dataloader]
@@ -20,7 +19,6 @@ train_dataset=<path/to/train_400_0.50_90.ffcv>
 val_dataset=<path/to/val_400_0.50_90.ffcv>
 ...
 ```
-</pre>
 
 * Only 16 epochs of training per model.
 * Batch size of 512 per GPU.
