@@ -91,3 +91,9 @@ The script `measure_throughput_gpu.py` handles inference throughput measurements
 ###### Caveat: Only the mean measurements for throughput/latency are utilized to train the surrogates. The standard deviation measurements are for internal testing only. Perhaps these error values can somehow be utilized to allow the surrogates to output the uncertainty in predictions, rather than using the ensemble prediction uncertainty as the noise in throughput.
 
 ---
+
+### Update 25 Aug 2023
+
+Added code for ECG, Satellite, and DeepSEA datasets. Please see corresponding folders above. 
+
+The training/evalation of these additional datasets follows the same procedure as that highlighted for ImageNet dataset above.
