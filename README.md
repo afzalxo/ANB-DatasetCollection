@@ -1,6 +1,6 @@
 ## Dataset Collection Pipelines for Surrogates
 
-This subdirectory contains files for the dataset collection which was utilized to train the surrogates. The dataset includes architectures randomly sampled from the MnasNet search space, their accuracies, and their device-specific performance metrics such as throughput on all devices, and latency on the FPGA devices. For details on the search-space utilized in this benchmark, please see Appendix. B of the paper. The architectures in the dataset are sampled randomly from the search space. We collected this dataset for roughly 5.2k architectures.
+This subdirectory contains files for the dataset collection pipelines which were utilized to train the surrogates, and for the ablation studies. The dataset includes architectures randomly sampled from the MnasNet search space, their accuracies, and their device-specific performance metrics such as throughput on all devices, and latency on the FPGA devices. For details on the search-spaces utilized in this benchmark, please see Appendix. B of the paper. The architectures in the dataset are sampled randomly from the search space. We collected this dataset for roughly 5.2k architectures.
 
 * Accuracy Collection on ImageNet (Proxified)
 * Throughput/Latency Collection
@@ -94,6 +94,6 @@ The script `measure_throughput_gpu.py` handles inference throughput measurements
 
 ### Update 25 Aug 2023
 
-Added code for ECG, Satellite, and DeepSEA datasets. Please see corresponding folders above. 
+Added code for ECG, Satellite, and DeepSEA datasets. Please see corresponding subfolders: [ECG](https://github.com/afzalxo/ANB-DatasetCollection/tree/master/ecg-code), [Satellite](https://github.com/afzalxo/ANB-DatasetCollection/tree/master/satellite-code), [DeepSEA](https://github.com/afzalxo/ANB-DatasetCollection/tree/master/deepsea-code). 
 
 The training/evalation of these additional datasets follows the same procedure as that highlighted for ImageNet dataset above.
